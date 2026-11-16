@@ -1,0 +1,63 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/galactic-ai-team/wgif/blob/main/packages/format/schema/interactions.v0.1.schema.json",
+  "title": "WGIF v0.1 declarative interactions",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": { "enum": ["0.1", "0.1-draft"] },
+    "camera": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "spawn": { "$ref": "#/definitions/vec3" },
+        "lookAt": { "$ref": "#/definitions/vec3" },
+        "firstPersonHeight": { "type": "number", "exclusiveMinimum": 0, "maximum": 100 },
+        "bounds": {
+          "type": "object", "required": ["min", "max"], "additionalProperties": false,
+          "properties": { "min": { "$ref": "#/definitions/vec3" }, "max": { "$ref": "#/definitions/vec3" } }
+        }
+      }
+    },
+    "objects": { "type": "array", "maxItems": 10000, "items": { "$ref": "#/definitions/object" } },
+    "colliders": { "type": "object", "required": ["static"], "additionalProperties": false, "properties": {
+      "static": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/definitions/id" } }
+    } },
+    "minigames": { "type": "array", "maxItems": 100, "items": { "$ref": "#/definitions/minigame" } },
+    "interactions": { "type": "array", "maxItems": 10000, "items": { "type": "object" } }
+  },
+  "definitions": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9_:.\\-]+$" },
+    "vec3": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "number" } },
+    "shape": { "type": "object", "required": ["type"], "additionalProperties": false,
+      "properties": { "type": { "enum": ["sphere", "box", "cylinder"] }, "center": { "$ref": "#/definitions/vec3" }, "radius": { "type": "number", "exclusiveMinimum": 0 }, "height": { "type": "number", "exclusiveMinimum": 0 }, "size": { "$ref": "#/definitions/vec3" } }
+    },
+    "object": {
+      "type": "object", "required": ["id", "node", "kind"], "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/definitions/id" }, "node": { "$ref": "#/definitions/id" },
+        "kind": { "enum": ["grabbable", "trigger", "static", "dynamic"] },
+        "spawn": { "$ref": "#/definitions/vec3" },
+        "shape": { "$ref": "#/definitions/shape" },
+        "physics": { "type": "object", "required": ["shape"], "additionalProperties": false,
+          "properties": { "shape": { "enum": ["sphere", "box", "capsule"] }, "radius": { "type": "number", "exclusiveMinimum": 0 }, "mass": { "type": "number", "minimum": 0 }, "restitution": { "type": "number", "minimum": 0, "maximum": 1 }, "friction": { "type": "number", "minimum": 0, "maximum": 1 } }
+        },
+        "on": { "type": "object", "additionalProperties": false,
+          "properties": { "enterFromAbove": { "$ref": "#/definitions/event" }, "enter": { "$ref": "#/definitions/event" }, "grab": { "$ref": "#/definitions/event" } }
+        }
+      }
+    },
+    "event": { "type": "object", "required": ["event"], "additionalProperties": false,
+      "properties": { "event": { "enum": ["score", "reset", "activate"] }, "target": { "$ref": "#/definitions/id" } }
+    },
+    "minigame": { "type": "object", "required": ["id", "type", "ball", "targets", "rules"], "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/definitions/id" }, "type": { "const": "basketball-shooting" },
+        "title": { "type": "string", "maxLength": 200 }, "ball": { "$ref": "#/definitions/id" },
+        "targets": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/definitions/id" } },
+        "rules": { "type": "object", "required": ["durationSec", "pointsPerBasket"], "additionalProperties": false,
+          "properties": { "durationSec": { "type": "number", "exclusiveMinimum": 0, "maximum": 86400 }, "pointsPerBasket": { "type": "integer", "minimum": 0, "maximum": 1000 }, "threePointRadius": { "type": "number", "exclusiveMinimum": 0 } }
+        }
+      }
+    }
+  }
+}

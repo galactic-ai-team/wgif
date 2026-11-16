@@ -1,185 +1,262 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://github.com/galactic-ai-team/wgif/blob/main/packages/format/schema/manifest.v0.1.schema.json",
-  "title": "WGIF manifest v0.1 (draft)",
-  "description": "Root manifest.json of a .wgif container. See docs/SPEC-v0.1-draft.md.",
+  "title": "WGIF manifest v0.1 (release candidate)",
+  "description": "Root manifest.json of a .wgif archive; see docs/SPEC-v0.1-draft.md (RC1).",
   "type": "object",
   "required": ["wgif", "id", "title", "creator", "created", "mode", "entry", "files"],
   "additionalProperties": false,
   "properties": {
     "$schema": { "type": "string" },
-    "wgif": {
-      "description": "Format version as MAJOR.MINOR. Readers MUST reject unknown MAJOR versions.",
-      "type": "string",
-      "pattern": "^[0-9]+\\.[0-9]+$"
-    },
-    "id": {
-      "description": "Stable world identifier. Kept across edits; a fork gets a new id and records its parent.",
-      "type": "string",
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$"
-    },
+    "wgif": { "description": "MAJOR.MINOR. Unknown major versions are rejected by the reader.", "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "id": { "description": "Stable ID; forks obtain a new ID.", "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$" },
     "title": { "type": "string", "minLength": 1, "maxLength": 200 },
     "description": { "type": "string", "maxLength": 4000 },
     "creator": {
-      "type": "object",
-      "required": ["name"],
-      "additionalProperties": false,
+      "type": "object", "required": ["name"], "additionalProperties": false,
       "properties": {
         "name": { "type": "string", "minLength": 1, "maxLength": 200 },
         "url": { "type": "string", "maxLength": 2048 },
-        "publicKey": {
-          "description": "Creator ed25519 public key, 32 bytes, lowercase hex.",
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        }
+        "publicKey": { "description": "ed25519 public key, 32 bytes, lowercase hex (not a verified identity)", "type": "string", "pattern": "^[0-9a-f]{64}$" }
       }
     },
     "created": { "$ref": "#/definitions/timestamp" },
     "modified": { "$ref": "#/definitions/timestamp" },
     "license": { "type": "string", "maxLength": 200 },
-    "mode": {
-      "description": "Creator-declared edit policy, honoured by compliant players. Not DRM.",
-      "enum": ["locked", "editable", "layered"]
-    },
+    "mode": { "description": "Creator policy honored by compliant players; not DRM.", "enum": ["locked", "editable", "layered"] },
     "entry": {
-      "type": "object",
-      "required": ["scene", "preview"],
-      "additionalProperties": false,
+      "type": "object", "required": ["scene", "preview"], "additionalProperties": false,
       "properties": {
-        "scene": { "$ref": "#/definitions/path" },
-        "preview": { "$ref": "#/definitions/path" },
-        "interactions": { "$ref": "#/definitions/path" },
-        "state": { "$ref": "#/definitions/path" }
+        "scene": { "$ref": "#/definitions/path" }, "preview": { "$ref": "#/definitions/path" },
+        "interactions": { "$ref": "#/definitions/path" }, "state": { "$ref": "#/definitions/path" }
       }
     },
     "spawn": {
-      "type": "object",
-      "required": ["position"],
-      "additionalProperties": false,
-      "properties": {
-        "position": { "$ref": "#/definitions/vec3" },
-        "lookAt": { "$ref": "#/definitions/vec3" }
-      }
+      "type": "object", "required": ["position"], "additionalProperties": false,
+      "properties": { "position": { "$ref": "#/definitions/vec3" }, "lookAt": { "$ref": "#/definitions/vec3" } }
     },
     "units": { "enum": ["meters"] },
     "requires": {
-      "description": "Capabilities a player must support to open the world fully.",
-      "type": "array",
-      "uniqueItems": true,
+      "type": "array", "uniqueItems": true,
       "items": { "type": "string", "pattern": "^[a-z][a-z0-9.-]{1,63}$" }
     },
     "files": {
-      "description": "Every payload file in the container except manifest.json itself.",
-      "type": "array",
-      "minItems": 1,
+      "type": "array", "minItems": 1,
       "items": {
-        "type": "object",
-        "required": ["path", "sha256", "size"],
-        "additionalProperties": false,
+        "type": "object", "required": ["path", "sha256", "size"], "additionalProperties": false,
         "properties": {
-          "path": { "$ref": "#/definitions/path" },
-          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-          "size": { "type": "integer", "minimum": 0 },
-          "mediaType": { "type": "string", "maxLength": 200 },
-          "role": {
-            "enum": ["scene", "preview", "interactions", "state", "model", "asset", "layer", "other"]
-          }
+          "path": { "$ref": "#/definitions/path" }, "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "size": { "type": "integer", "minimum": 0 }, "mediaType": { "type": "string", "maxLength": 200 },
+          "role": { "enum": ["scene", "preview", "interactions", "state", "model", "asset", "layer", "other"] }
         }
       }
     },
     "models": {
-      "description": "Optional embedded AI models. Packaging convention owned by the Embedded AI lane.",
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["id", "path", "runtime"],
-        "additionalProperties": true,
-        "properties": {
-          "id": { "type": "string", "minLength": 1 },
-          "path": { "$ref": "#/definitions/path" },
-          "runtime": { "enum": ["rules", "onnx"] },
-          "purpose": { "type": "string" }
-        }
-      }
+      "description": "Declarative embedded models; see §4.1. Model descriptor + fallback validation happens in validateWorld.",
+      "type": "array", "maxItems": 64, "items": { "$ref": "#/definitions/modelDescriptor" }
     },
     "layers": {
-      "description": "Ordered user layers applied on top of the base world (mode = layered).",
-      "type": "array",
+      "description": "Ordered overlays, mode=layered.", "type": "array",
       "items": {
-        "type": "object",
-        "required": ["id", "path", "author"],
-        "additionalProperties": false,
+        "type": "object", "required": ["id", "path", "author"], "additionalProperties": false,
         "properties": {
-          "id": { "type": "string", "minLength": 1 },
-          "path": { "$ref": "#/definitions/path" },
-          "author": { "type": "string", "minLength": 1 },
-          "created": { "$ref": "#/definitions/timestamp" }
+          "id": { "type": "string", "minLength": 1 }, "path": { "$ref": "#/definitions/path" },
+          "author": { "type": "string", "minLength": 1 }, "created": { "$ref": "#/definitions/timestamp" }
         }
       }
     },
     "provenance": {
-      "type": "object",
-      "additionalProperties": false,
+      "type": "object", "additionalProperties": false,
       "properties": {
         "parent": {
-          "type": "object",
-          "required": ["id", "signingHash"],
-          "additionalProperties": false,
-          "properties": {
-            "id": { "type": "string" },
-            "signingHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
-          }
+          "type": "object", "required": ["id", "signingHash"], "additionalProperties": false,
+          "properties": { "id": { "type": "string" }, "signingHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" } }
         },
         "generator": { "type": "string", "maxLength": 200 },
         "history": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "required": ["action", "at"],
-            "additionalProperties": false,
-            "properties": {
-              "action": { "type": "string" },
-              "at": { "$ref": "#/definitions/timestamp" },
-              "by": { "type": "string" },
-              "note": { "type": "string" }
-            }
+          "type": "array", "items": {
+            "type": "object", "required": ["action", "at"], "additionalProperties": false,
+            "properties": { "action": { "type": "string" }, "at": { "$ref": "#/definitions/timestamp" },
+              "by": { "type": "string" }, "note": { "type": "string" } }
           }
         }
       }
     },
     "signature": {
-      "type": "object",
-      "required": ["alg", "publicKey", "value"],
-      "additionalProperties": false,
+      "type": "object", "required": ["alg", "publicKey", "value"], "additionalProperties": false,
       "properties": {
-        "alg": { "const": "ed25519" },
-        "publicKey": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "alg": { "const": "ed25519" }, "publicKey": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "value": { "type": "string", "pattern": "^[0-9a-f]{128}$" }
       }
     },
-    "extensions": {
-      "description": "Namespaced extension data (e.g. \"x-dee-size\"). Unknown extensions MUST be preserved and MAY be ignored.",
-      "type": "object",
-      "propertyNames": { "pattern": "^x-[a-z0-9-]+$" }
-    }
+    "extensions": { "description": "Namespaced experimental data; preserve on export.",
+      "type": "object", "propertyNames": { "pattern": "^x-[a-z0-9-]+$" } }
   },
   "definitions": {
+    "modelDescriptor": {
+      "title": "WGIF embedded model descriptor v0.1 (RC review)",
+      "description": "One entry of manifest.models[]. Cross-field runtime/fallback rules are enforced by validateWorld(). Model bytes are data only; no executable script payloads.",
+      "type": "object",
+      "required": [
+        "id",
+        "path",
+        "runtime"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^models/(?!(?:\\.{1,2}|__proto__)(?:/|$))(?!.*\\/(?:\\.{1,2}|__proto__)(?:/|$))(?!.*[\\\\\\u0000-\\u001F\\u007F])[^/]+(?:/[^/]+)*$"
+        },
+        "runtime": {
+          "enum": [
+            "rules",
+            "onnx"
+          ]
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?$"
+        },
+        "inputs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{0,63}$"
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 500
+              },
+              "shape": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 4,
+                "items": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "dtype": {
+                "enum": [
+                  "float32",
+                  "int32",
+                  "int64",
+                  "bool"
+                ]
+              },
+              "range": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {
+                  "type": "number"
+                }
+              }
+            }
+          }
+        },
+        "outputs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{0,63}$"
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 500
+              },
+              "shape": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 4,
+                "items": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "dtype": {
+                "enum": [
+                  "float32",
+                  "int32",
+                  "int64",
+                  "bool"
+                ]
+              },
+              "range": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {
+                  "type": "number"
+                }
+              }
+            }
+          }
+        },
+        "tickHz": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 60
+        },
+        "deterministic": {
+          "type": "boolean"
+        },
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "sizeBytesMax": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "license": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "fallback": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+        }
+      }
+    },
     "path": {
-      "description": "Relative POSIX path inside the container. No leading slash, no '..', no backslashes.",
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 512,
-      "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))(?!.*\\\\)[^\\u0000]+$"
+      "description": "Safe relative POSIX path: no dot segments, empty segments, controls, drive prefix or backslash.",
+      "type": "string", "minLength": 1, "maxLength": 512,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*(?:^|/)(?:\\.{1,2}|__proto__)(?:/|$))(?!.*[\\u0000-\\u001F\\u007F])[^/]+(?:/[^/]+)*$"
     },
-    "timestamp": {
-      "type": "string",
-      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
-    },
-    "vec3": {
-      "type": "array",
-      "minItems": 3,
-      "maxItems": 3,
-      "items": { "type": "number" }
-    }
+    "timestamp": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$" },
+    "vec3": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "number" } }
   }
 }

@@ -1,249 +1,103 @@
-# WGIF v0.1 — Specification (DRAFT)
+# WGIF v0.1 — Release candidate 1
 
-**Status:** draft for team review. Owner of the final text: GPT-6 (Ace), Format & Architecture lane.
-Coordinator: Lumi. Nothing here is frozen until Stephon approves v0.1.
+**Status:** proposed release candidate, **not ratified**; requires Stephon's approval. Format lane: GPT-6 (Ace). 2026-11-15.
 
-**Reference implementation:** [`packages/format`](../packages/format) (reader, writer, validator, signing).
-**Schema:** [`packages/format/schema/manifest.v0.1.schema.json`](../packages/format/schema/manifest.v0.1.schema.json).
-**Example:** [`examples/court/court.wgif`](../examples/court) (built by `npm run pack:court`).
+The words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT** and **MAY** are normative in the RFC 2119 / RFC 8174 sense only when uppercase. The normative container implementation is `packages/format`. The JSON Schemas in `packages/format/schema` are versioned alongside this specification.
 
-The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are used as in RFC 2119.
+## 1. Purpose and scope
 
----
+WGIF (World Generative Interactive Format) packages a portable, offline, navigable 3D world in one `.wgif` file, with an image preview and optional declarative interactions, initial state, user layers and local model assets. The v0.1 proof is a handcrafted basketball court; image-to-world and animated previews are later milestones. v0.1 is **not** a browser-native GIF replacement, codec, DRM system, executable bundle, multiplayer protocol or scene-generation API.
 
-## 1. Goals and non-goals
+## 2. Identity and ZIP profile (Q1 resolved)
 
-WGIF ("World Generative Interactive Format") is a single-file container for an explorable,
-interactive 3D world, meant to be as easy to share as a GIF.
+Extension `.wgif`; provisional media type `application/vnd.wgif+zip` (not registered). A v0.1 file MUST start with a ZIP local file header (`PK\x03\x04`) at byte 0. Its first local entry MUST be named `manifest.json` and MUST use ZIP method 0 (stored). Other entries MUST use method 0 or 8 (deflate). Readers MUST reject encryption, split volumes, ZIP64, data descriptors, duplicate names, directory entries, symlinks, overlapping local records and central/local header inconsistencies. Entry names are UTF-8 relative POSIX paths. A path MUST NOT contain `.` or `..` segments, empty segments, backslashes, control characters, absolute paths, drive-letter prefixes or reserved `__proto__` segments. Names are case-sensitive.
 
-Goals for v0.1:
+The preview **lives inside the ZIP** as the `entry.preview` image. **GIF/ZIP polyglots are not part of v0.1.** Prepending a GIF would conflict with byte-zero ZIP identification and expand the security surface. A receiving application that cannot decode WGIF MAY extract the preview through a compatible intermediary; arbitrary GIF viewers are not promised to display `.wgif` files. A future minor version may specify external preview discovery.
 
-- One file that holds geometry, textures, audio, interaction rules, game state and optional small AI models.
-- Fully offline playback. Nothing in a world may require a network call to open or play.
-- An ordinary preview image for platforms that can't render the world.
-- Creator-declared edit permissions (locked / editable / layered) with signatures and provenance.
-- An open, documented, versioned format that doesn't depend on any one player.
+Writers SHOULD use manifest first, payload entries sorted lexicographically, and fixed DOS timestamp 2000-01-01 00:00 local time to enable reproducible builds. No content fetched from the network is needed for playback.
 
-Non-goals for v0.1: DRM, executable scripting (see §5.6), streaming or very large worlds, and multiplayer.
+## 3. Container layout and manifest
 
-## 2. File identity
-
-- Extension: `.wgif`. Media type: `application/vnd.wgif+zip` (provisional, unregistered).
-- A `.wgif` file is a ZIP archive (PKWARE APPNOTE; deflate or stored entries only, no encryption, no ZIP64 in v0.1).
-- `manifest.json` MUST be the **first** local entry and MUST be **stored** (uncompressed). This lets
-  sniffers identify a WGIF by reading the first ~100 bytes (`PK\x03\x04` … `manifest.json` … `"wgif"`).
-- Writers SHOULD produce reproducible output: entries sorted by path after the manifest, and a fixed
-  entry timestamp (the reference writer uses DOS time 2000-01-01 00:00, written identically in every timezone).
-
-> Open question (Q1): should the preview also be prepended *outside* the ZIP, as a real GIF
-> polyglot, so `.wgif` files render as GIFs in apps that only sniff the magic bytes? ZIP readers
-> tolerate leading data. Tracked for the Format and Optimization lanes.
-
-## 3. Container layout
-
-```
-world.wgif
-├── manifest.json        REQUIRED  — §4
-├── preview.gif|png      REQUIRED  — static or animated preview (entry.preview)
-├── world.glb            REQUIRED  — scene, glTF 2.0 binary (entry.scene)
-├── interactions.json    OPTIONAL  — interaction rules and minigames (entry.interactions)
-├── game-state.json      OPTIONAL  — initial / saved state (entry.state)
-├── models/              OPTIONAL  — embedded AI models (§5.5)
-├── assets/              OPTIONAL  — textures, audio and other payload files
-└── layers/              OPTIONAL  — user layers in layered worlds (§8)
+```text
+manifest.json       required; first local entry; uncompressed UTF-8 JSON
+world.glb           required (manifest entry.scene may rename)
+preview.png         required (or GIF/JPEG/WebP; manifest entry.preview may rename)
+interactions.json   optional, declarative only
+game-state.json     optional, initial state only
+layers/*.json       optional overlay layer files
+models/*            optional data-only inference assets
+assets/*            optional referenced textures/audio/etc
 ```
 
-All entry paths are relative POSIX paths. They MUST NOT start with `/`, contain `..` or `.`
-segments, backslashes, empty segments, NUL or drive letters. The names above are conventions:
-the manifest's `entry` object is the source of truth for where each role lives.
+The uncompressed manifest MUST be at most 1 MiB and satisfy `schema/manifest.v0.1.schema.json`. Required properties: `wgif`, `id`, `title`, `creator`, `created`, `mode`, `entry`, `files`. This release specifies `wgif: "0.1"`, `id` as a stable world identifier, and `mode` as one of `locked`, `editable`, `layered`. `creator.publicKey` MAY contain the public ed25519 key. `created` and `modified` are UTC ISO-8601 timestamps. `entry.scene` MUST reference a `.glb`; `entry.preview` MUST reference a GIF, PNG, JPEG or WebP. `entry.interactions` and `entry.state`, when present, MUST reference `.json` files. `units` is `meters`; +Y is up. `spawn.position` is in meters.
 
-## 4. Manifest (`manifest.json`)
+`files[]` MUST list each ZIP entry except `manifest.json` exactly once and MUST have `path`, lowercase hex SHA-256 of the **uncompressed** bytes and uncompressed `size`. `role` MAY be `scene`, `preview`, `interactions`, `state`, `model`, `asset`, `layer`, `other`. Each file referenced by any `entry`, `models[]` or `layers[]` MUST be listed and present. Unknown top-level fields fail the v0.1 schema. Experimental fields belong in namespaced `extensions["x-..."]`; tools SHOULD preserve them during export.
 
-UTF-8 JSON object, validated by the JSON Schema above. Fields:
+## 4. Scene, preview and models
 
-| Field | Req | Meaning |
-|---|---|---|
-| `wgif` | ✔ | Format version `MAJOR.MINOR`, `"0.1"` for this draft. |
-| `id` | ✔ | Stable world id (`[A-Za-z0-9][A-Za-z0-9._:-]{2,127}`). Kept across edits of the same world. |
-| `title` | ✔ | Human title. |
-| `description` | | Free text. |
-| `creator` | ✔ | `{ name, url?, publicKey? }`. `publicKey` is the creator's ed25519 key (hex). |
-| `created` / `modified` | ✔ / | UTC timestamps, `YYYY-MM-DDTHH:MM:SS[.fff]Z`. |
-| `license` | | SPDX id or free text. |
-| `mode` | ✔ | `locked`, `editable` or `layered` (§6). |
-| `entry` | ✔ | `{ scene, preview, interactions?, state? }`, paths into the container. |
-| `spawn` | | `{ position: [x,y,z], lookAt?: [x,y,z] }` in meters, glTF axes (+Y up). |
-| `units` | | `"meters"` (the only value in v0.1). |
-| `requires` | | Capability strings a player needs (e.g. `scene.glb`, `minigame.basketball-shooting`, `runtime.onnx`). |
-| `files` | ✔ | One entry per payload file: `{ path, sha256, size, mediaType?, role? }`. |
-| `models` | | Embedded model descriptors (§5.5). |
-| `layers` | | Ordered user layers (§8). |
-| `provenance` | | `{ parent?, generator?, history? }` (§7). |
-| `signature` | | `{ alg: "ed25519", publicKey, value }` (§7). |
-| `extensions` | | Namespaced extra data, keys `x-<name>`. |
+The scene MUST be self-contained glTF 2.0 binary (`.glb`), with no external HTTP or filesystem URI references. Players MUST implement glTF core sufficient to show the scene; use of optional glTF extensions MUST be declared in `requires[]`. `extras.wgif` node hints MAY describe built-in collider or interaction roles but MUST NOT contain executable code. Players SHOULD show the preview when rendering is unsupported. Preview images SHOULD be at most 512 px on the longest side and 256 KiB.
 
-Rules:
+### 4.1 Embedded models (Nova / Format review)
 
-- `files[]` MUST list **every** entry in the container except `manifest.json`, and nothing else.
-  `sha256` is lowercase hex of the raw (uncompressed) bytes. `size` is the uncompressed byte length.
-- `role` is one of `scene, preview, interactions, state, model, asset, layer, other`.
-- Unknown top-level fields are a schema error in v0.1 (strict). Forward-compatible data goes in `extensions`.
+`models[]` MAY describe self-contained files under `models/` using `runtime: "rules" | "onnx"`. Each descriptor MUST have a unique `id`, a safe `models/` `path`, and a `runtime`. It MAY include `purpose`, `version`, `inputs`, `outputs`, `tickHz` (1–60, default 10), `deterministic`, `seed`, `sizeBytesMax`, `license` and `fallback`. See `schema/model-descriptor.v0.1.schema.json`. Model data MUST NOT contain executable scripts; inference MUST stay on-device in a **player-supplied** runtime without network fetches. Model loading is not a baseline requirement for a v0.1 player.
 
-## 5. Payload files
+Rules models MUST be valid UTF-8 JSON and declare `deterministic: true` and a `seed` in their descriptor. ONNX models MUST declare named input/output tensors, including shapes and dtypes, with batch size 1 and at most 65,536 elements per tensor. The player MUST verify actual graph tensors against the descriptors before inference. All models MUST remain below 1 MiB uncompressed; absent `sizeBytesMax`, the defaults are 64 KiB for rules and 50 KiB for ONNX. `sizeBytesMax` may raise that default up to 1 MiB. `tickHz` is a maximum model-update frequency, not a promise of real-time scheduling. Players MUST NOT execute any WGIF-supplied JS, WASM, shell code or user-defined ONNX/custom operators.
 
-### 5.1 Scene: `world.glb`
-glTF 2.0 binary. v0.1 players MUST support core glTF 2.0 with embedded buffers and images. They
-SHOULD support `KHR_mesh_quantization`, `KHR_texture_basisu` and `EXT_meshopt_compression`; worlds
-that use them MUST list them in `requires` (Optimization lane to finalize). External URIs are
-forbidden: everything has to be inside the GLB or in the container.
+`fallback` is the ID of a same-`purpose` **rules** model for an ONNX descriptor. It MUST resolve to a different model in `models[]`, MUST NOT chain, and MUST NOT change any signed payload bytes. Players with the optional ONNX capability SHOULD try the primary model in manifest order; if it fails to initialize, a player supporting `runtime.rules` MUST use the declared rules fallback and SHOULD report the actual runtime. Invalid container hashes, schema violations or malicious payloads are **not** normal runtime fallbacks: readers MUST reject those archives before playback.
 
-Nodes MAY carry `extras.wgif` hints, such as `{ "collider": "static" }`, `{ "role": "target" }` or
-`{ "role": "grabbable" }`. Players use these hints, but `interactions.json` is authoritative.
+`requires[]` is the **only** mandatory capability list. If a world needs rules for essential behavior (including an ONNX-to-rules fallback), it MUST declare `runtime.rules`. An optional ONNX alternative with a valid rules fallback MUST NOT, by itself, force `runtime.onnx` into `requires[]`. If ONNX is essential and no usable fallback exists, the world MUST declare `runtime.onnx`; if ONNX is entirely optional, it MAY omit both runtime capabilities. Unknown required capabilities prevent interactive playback, with an understandable error and a safe preview when available. No `requiredExtensions` field is introduced in v0.1.
 
-### 5.2 Preview: `preview.gif|png|jpg|webp`
-A plain image. It SHOULD be ≤ 512 px on the long edge and ≤ 256 KB. Animated GIF is preferred
-when the creator wants a "GIF that opens into a world".
+**Offline deployment note:** an ONNX runtime's WASM is part of the *installed player*, not the `.wgif`. A web player MUST precache its local runtime resources for offline ONNX playback or fall back to rules; it MUST NOT download runtime code in response to opening a world while offline.
 
-### 5.3 Interactions: `interactions.json` (shape is a DRAFT, owned by the Format + Player lanes)
-Declarative data, not code. The v0.1 draft shape, as used by the example court:
+## 5. Declarative payloads (Q2 baseline)
 
-```json
-{
-  "version": "0.1-draft",
-  "camera": { "spawn": [0,1.7,9.5], "lookAt": [0,1.2,0], "firstPersonHeight": 1.7,
-              "bounds": { "min": [-17,0,-10], "max": [17,6,10] } },
-  "objects": [ { "id": "ball", "node": "ball", "kind": "grabbable", "physics": { "shape": "sphere", "radius": 0.12, "mass": 0.6, "restitution": 0.75 } },
-               { "id": "rim_home", "node": "rim_home", "kind": "trigger", "shape": { "type": "cylinder", "center": [12.425,3.05,0], "radius": 0.225, "height": 0.1 },
-                 "on": { "enterFromAbove": { "event": "score", "target": "ball" } } } ],
-  "colliders": { "static": ["floor_court", "..."] },
-  "minigames": [ { "id": "shootout", "type": "basketball-shooting", "ball": "ball", "targets": ["rim_home","rim_away"],
-                   "rules": { "durationSec": 60, "pointsPerBasket": 2 } } ]
-}
-```
+`entry.interactions`, `entry.state` and each `layers[].path` MUST be valid UTF-8 JSON, not scripts, and SHOULD carry `version: "0.1"`; the old `"0.1-draft"` tag remains accepted with a warning. JSON without `version` is accepted for early examples with a warning. Each JSON payload MUST be at most 1 MiB. `interactions.v0.1.schema.json` declares camera hints, object kinds, finite physics parameters, triggers, collider references and the `basketball-shooting` minigame. `game-state.v0.1.schema.json` declares initial scores and object transforms. `layer.v0.1.schema.json` declares bounded `add`, `move` and `remove` operations, without arbitrary import URLs or code. These are **data contracts**; player support for each action is gated by capability strings. A layer MAY contain an empty operation list.
 
-A JSON Schema for this file is a Phase One deliverable (GPT-6, together with Claude).
+All v0.1 readers MUST NOT execute JavaScript, WASM, shell scripts, HTML or arbitrary code embedded in a world. They MUST NOT fetch external resources to open or play a world. Validation rejects payload filenames with common executable extensions; this is defense in depth, not a substitute for never evaluating untrusted scene data.
 
-### 5.4 State: `game-state.json`
-Initial state that players load, such as scores and object transforms. Players save the
-**runtime** state locally (for example in IndexedDB, keyed by `id` + base signing hash), and only
-write it back into the file on an explicit export (§8).
+## 6. Modes and edit export
 
-### 5.5 Models: `models/`
-Each embedded model is a file under `models/` with a descriptor in `manifest.models[]`:
-`{ id, path, runtime: "rules" | "onnx", purpose?, ... }`. `rules` models are declarative JSON
-behaviour tables. `onnx` models run through ONNX Runtime Web (WASM, CPU) or an equivalent local
-runtime. Inference MUST be on-device. The Embedded AI lane (Nova) owns the full convention
-(inputs, outputs, tick rate, size caps).
+`mode` is a **creator-declared policy** recognized by compliant software, **not DRM**. Anyone can extract or modify ZIP bytes. A valid signature makes unauthorized changes *detectable*, not impossible.
 
-### 5.6 No executable code in v0.1
-Containers MUST NOT rely on JavaScript, WASM or any other code being executed from the file.
-Players MUST NOT execute code found in a container. Behaviour comes only from the player's
-built-in systems plus declarative data. Scripting is future work and needs its own sandbox design.
+| Mode | Compliant player behaviour |
+|---|---|
+| `locked` | MUST allow navigation/play as supported, MUST NOT expose editing or re-export as the original creator's authentic signed world; MAY keep runtime save state locally. |
+| `editable` | MAY edit/export; MUST recompute file hashes; MUST drop a signature if its signed view changes; SHOULD append advisory provenance history and set provenance parent to the signed original. |
+| `layered` | MAY add ordered `layers/*.json` entries and `layers[]` descriptors; MUST NOT modify non-layer base content while retaining its signature. A layer's addition does **not** attest to its creator's identity. |
 
-## 6. Modes: locked, editable, layered
+When a signed file is modified, a player MUST distinguish intact base authenticity from user-authored overlays. A `locked` world without a signature MAY open, but MUST be displayed as **unverified** if origin/trust is surfaced in the UI. An invalid signature SHOULD be flagged prominently; a player MAY refuse the file or offer the preview.
 
-`mode` is the **creator's declared policy**. It is enforced by **compliant players**, backed by the
-creator signature (§7). It is **not DRM**. A `.wgif` is a ZIP, so anyone with a ZIP tool can change
-any byte. What the signature guarantees is that such changes are **detectable**: a modified world
-can no longer claim to be the creator's authentic, signed original.
+## 7. Signing, provenance and key trust (Q3 resolved)
 
-| Mode | Compliant player MUST | Compliant player MUST NOT |
-|---|---|---|
-| `locked` | Allow explore and play. Save runtime state locally (scores and so on) outside the file. | Offer edit tools, or export a modified world that keeps the creator's identity or signature. |
-| `editable` | Allow edits and exports. On export, recompute hashes, append to `provenance.history`, and drop a creator signature that no longer verifies, recording it as `provenance.parent`. | Keep an invalid signature in an exported file. |
-| `layered` | Keep the base world bit-identical. Store user additions as files under `layers/`, listed in `layers[]`. The base signature stays valid (§7). | Modify any non-layer file. |
+The signing hash binds manifest identity, creator, mode, entry points, required capabilities and SHA-256 payload hashes. Compute `signedView(manifest)` by removing `signature`, `layers`, `modified`, and `provenance.history`, and replacing `files[]` with entries of `{path,sha256,size}` excluding role `layer`, sorted by path. Remove an empty `provenance` object after excluding history. Serialize the signed view as RFC 8785 canonical JSON (UTF-16 key ordering, ECMAScript number and string serialization, no whitespace), then SHA-256 the UTF-8 canonical bytes. ed25519 signs the **raw 32-byte digest**, not its hex text. The signature contains `alg:"ed25519"`, lowercase hex `publicKey` (32 bytes) and `value` (64 bytes). If `creator.publicKey` is provided it MUST match `signature.publicKey`.
 
-If a `locked` world has no valid signature, the player SHOULD show it as "unsigned / unverified".
-It MAY still play it.
+Integrity and identity are different: a cryptographically valid signature proves possession of a private key, not that a self-declared creator name corresponds to a real person. **Trust discovery in v0.1 is out-of-band.** Users MAY independently compare the public key (or SHA-256 fingerprint of its 32 raw bytes) against a creator-operated trusted channel. Players SHOULD label keys they have not independently verified as "signature valid, creator unverified". Private signing keys MUST stay outside `.wgif` files, repositories and logs. **Detached signature files are deferred**: v0.1 embeds the signature in `manifest.json` and does not require a detached variant.
 
-## 7. Provenance and signatures
+`provenance.parent` records `{id, signingHash}`; `provenance.generator` records the tool; `provenance.history[]` contains `{action,at,by?,note?}`. History, layers and modified timestamp are excluded from the creator signature, so they are **advisory and not independently authenticated**. Players MUST NOT display them as cryptographically proven authorship.
 
-**Signing hash.** Take the manifest and remove `signature`, `layers`, `modified` and
-`provenance.history`. Reduce `files[]` to the non-`layer` entries, each as `{path, sha256, size}`,
-sorted by path. Serialise the result as canonical JSON (keys sorted, no whitespace; RFC 8785/JCS for
-the value set WGIF uses). The **signing hash** is SHA-256 over those UTF-8 bytes.
+## 8. Reader security and limits
 
-In practice this is the manifest's **hash list** (every non-layer file's SHA-256) bound together with
-the fields that define the world and its permissions (`id`, `mode`, `creator`, `entry`, …). Signing
-the hash list alone would let anyone flip `locked` to `editable` without breaking the signature.
+Readers MUST preflight ZIP central directory offsets, filenames, methods, sizes and entry count **before inflation**, and MUST enforce the v0.1 untrusted-input ceilings: **256 entries, 16 MiB per entry, 64 MiB total uncompressed**. Players MAY impose lower limits (including a 1 MiB "micro-world" profile), but MUST NOT silently raise the ceilings for arbitrary untrusted files. The separate 1 MiB limits for `manifest.json` and each declarative JSON payload still apply. These are decompression-safety ceilings, **not** recommended asset budgets; larger worlds would need a future profile/version and explicit trust policy. Readers MUST reject the unsafe paths and archive structures in §2 and MUST NOT extract raw names to the filesystem. After inflation, readers MUST validate the manifest, JSON payloads, declarations, SHA-256 and signature status. Readers SHOULD surface structured errors and warnings; invalid JSON, missing files and hash mismatches are errors. A player MUST refuse interactive playback when any `requires[]` capability is not implemented by that player and MUST explain which capabilities are missing; it SHOULD show the bundled preview when it can do so safely. Manifest validation MAY report unknown capabilities as warnings because syntactic validity and runtime feature support are separate checks. No code in the file may be executed by the reader.
 
-**Signature.** `signature.value` is an ed25519 signature (RFC 8032, 64 bytes, hex) over the 32-byte
-signing hash, using `signature.publicKey`. If `creator.publicKey` is present, it MUST equal
-`signature.publicKey`.
+## 9. Compatibility, `requires[]` and migration
 
-**Provenance.**
-- `provenance.parent = { id, signingHash }` records the world this one was derived from. Writers set it
-  when an edit drops the creator signature, or when forking (a fork also gets a new `id`).
-- `provenance.history[] = { action, at, by?, note? }` is an append-only edit log. It is not signed, so
-  it is advisory.
-- `provenance.generator` names the tool that produced the file.
+See [CAPABILITIES.md](CAPABILITIES.md) for the closed v0.1 capability registry and compatibility matrix. `wgif` uses `MAJOR.MINOR`; the only fully specified version in this release is `0.1`. New minor versions SHOULD add only optional fields/capabilities, but **0.x is unstable** and readers SHOULD offer preview fallback. Unknown major versions MUST be refused as interactive worlds. Unknown `requires[]` MUST be reported; an interactive player MUST NOT launch a world until all its declared `requires[]` capabilities are supported. Preview-only mode MAY remain available. `requiredExtensions[]` is not added in v0.1: `requires[]` already fulfills this contract, and glTF's own `extensionsRequired` remains authoritative within the GLB. The immutable v0.1 schema MUST NOT be silently broadened in place after approval.
 
-**Key handling.** Private keys never go into a container, a repo, or a chat. v0.1 has no PKI: trust in
-a `publicKey` comes from outside the file (for example, a creator publishing their key). Key discovery is
-an open question (Q3).
+Migrations MUST be opt-in offline transforms. The planned `0.1 -> 0.2` hook receives immutable `{from,to,manifest,files}`, returns a new `{manifest,files,warnings}`, and MUST recalculate payload hashes and remove invalidated signatures when serialized. No 0.2 migration is available until 0.2 exists. Readers MUST NOT automatically migrate signed originals when simply opening them.
 
-## 8. Layered edits and export
+## 10. Example and test vectors
 
-- A layer is a JSON file under `layers/` with entry `{ id, path, author, created? }` in `layers[]`.
-  Layers are applied in array order on top of the base scene. Its contents (add or move nodes,
-  extra interactions) are a DRAFT owned by the Player lane.
-- Adding, removing or reordering layers changes only fields excluded from the signing hash, so the
-  base creator signature stays valid and players can show "original by X + N layers".
-- Export of an `editable` world: see §6. The reference implementation is `exportEditedWorld()`.
+`examples/court/court.wgif` is a v0.1 example. A portable positive/negative archive corpus is in `tests/fixtures/` and canonical-JSON signing vectors are covered by Vitest. A player SHOULD accept `good-minimal.wgif` and reject each `bad-*.wgif` fixture. A signed-but-unknown public key is *not* equivalent to a trusted creator identity.
 
-## 9. Reader (player) requirements and security
+## 11. Review decisions and lane follow-ups
 
-A reader MUST:
+- **Q1 (Format + Optimization):** no GIF polyglot in v0.1; keep ZIP byte-zero and preview as normal image payload. Revisit only with demonstrated compatibility benefit and a parser security plan.
+- **Q2 (Format + Player):** publish conservative schemas now; Claude to verify node names, collision contract, minigame event semantics and layer application order before v0.1 approval.
+- **Q3 (Format):** public key in manifest plus externally published fingerprint, no public key registry or PKI and no detached signature in v0.1. Clearly distinguish verification from trust.
+- **Q4 (Optimization):** untrusted-world ceilings are 256 entries / 16 MiB each / 64 MiB total, while 1 MiB is a useful opt-in micro-world profile, **not** a universal cap. These are safety limits, not asset quality budgets; Dee to propose target budgets/compression matrix.
+- **Q5 (Embedded AI):** Nova to specify model tensor IO, determinism and update rate; current descriptor is intentionally minimal.
+- **Q6 (World Generation):** generator lane to define namespaced source provenance without embedding network-only dependencies.
+- **Ruling — offline delivery / `file://` (Format, GPT-6/Ace, 2026-11-16):** WGIF v0.1 players MUST support offline playback via an installed PWA or equivalent local application; direct `file://` execution is NOT required. HTTP(S) origins are acceptable for browser delivery. (Answers Dee's Optimization-lane question.)
+- **Ruling — `requires[]` vs `requiredExtensions[]` (Format, GPT-6/Ace, 2026-11-16):** `manifest.requires[]` fully supersedes `requiredExtensions[]`. One canonical capability registry ([CAPABILITIES.md](CAPABILITIES.md)) covers glTF extensions, gameplay systems, AI runtimes and other dependencies. Unsupported required capabilities MUST block interactive playback with a readable explanation (see §8 and §9).
 
-1. Reject input that is not a ZIP, or that has no `manifest.json` at the root.
-2. Enforce limits before inflating. The reference defaults are ≤ 4096 entries, ≤ 256 MiB per entry and
-   ≤ 512 MiB total uncompressed. Players MAY lower them (mobile).
-3. Reject unsafe entry paths (§3), and never write entries to the filesystem using their raw paths.
-4. Validate `manifest.json` against the schema. Reject an unknown `MAJOR` version. Accept a newer
-   `MINOR` with a warning.
-5. Check that every `entry.*`, `models[].path` and `layers[].path` is listed in `files[]`; that every
-   listed file is present, with a matching `size` and `sha256`; and that no unlisted files exist.
-6. Verify `signature` if present, and report `valid`, `invalid` or `absent` to the user.
-7. Never execute code from the container (§5.6), and never fetch network resources to render the world.
-
-## 10. Compatibility and versioning
-
-- `wgif` is `MAJOR.MINOR`. A **MINOR** bump only adds optional fields or capabilities. Old readers
-  ignore the parts they don't understand, which may degrade the experience but never breaks safety.
-  A **MAJOR** bump may change or remove anything. Old readers MUST refuse it and show the preview.
-- `requires[]` lists the capabilities needed to fully experience the world. Players SHOULD show a
-  "needs a newer player" notice, plus the preview, for unknown capabilities rather than failing silently.
-- `extensions["x-…"]` carry experimental data. Writers MUST preserve unknown extensions on export.
-  Promoting an extension into the core spec needs a MINOR bump.
-- Each published schema is immutable (`manifest.v0.1.schema.json`). New versions get new files.
-- Every v0.x MAY break compatibility. v1.0 freezes the rules in this section.
-
-## 11. Open questions for team review
-
-- Q1. GIF polyglot preview (§2). (Format + Optimization)
-- Q2. JSON Schemas for `interactions.json`, `game-state.json` and layer files. (Format + Player)
-- Q3. Key discovery and trust for creator public keys, and whether to add an optional detached signature file. (Format)
-- Q4. Size budgets per device class, and which glTF compression extensions are mandatory. (Optimization)
-- Q5. Model descriptor fields: input/output tensors, tick rate, determinism. (Embedded AI)
-- Q6. How an image/GIF-to-world generator records its source and parameters in `provenance`. (World Generation)
-
-## Appendix A: example manifest (abridged, from `examples/court`)
-
-```json
-{
-  "wgif": "0.1",
-  "id": "galactic.examples.court",
-  "title": "Galactic Court",
-  "creator": { "name": "Galactic AI Team" },
-  "created": "2026-11-15T00:00:00Z",
-  "mode": "editable",
-  "units": "meters",
-  "entry": { "scene": "world.glb", "preview": "preview.png", "interactions": "interactions.json", "state": "game-state.json" },
-  "spawn": { "position": [0, 1.7, 9.5], "lookAt": [0, 1.2, 0] },
-  "requires": ["scene.glb"],
-  "files": [
-    { "path": "game-state.json", "sha256": "…", "size": 219, "mediaType": "application/json", "role": "state" },
-    { "path": "world.glb", "sha256": "…", "size": 91384, "mediaType": "model/gltf-binary", "role": "scene" }
-  ]
-}
-```
+**Approval gate:** Stephon explicitly approves the spec and any merge. Until then this is RC1, not a normative published final standard.

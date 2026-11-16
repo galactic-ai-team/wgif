@@ -31,13 +31,37 @@ export interface FileEntry {
   role?: FileRole;
 }
 
+/** Named observation/action field (rules) or tensor signature (ONNX). */
+export interface ModelTensor {
+  name: string;
+  shape?: number[];
+  dtype?: 'float32' | 'int32' | 'int64' | 'bool';
+  description?: string;
+  range?: [number, number];
+}
+
+/** A data-only model descriptor; the player supplies the implementation/runtime. */
 export interface ModelEntry {
   id: string;
+  /** Relative POSIX path below models/. */
   path: string;
   runtime: 'rules' | 'onnx';
+  /** Purpose groups alternatives; fallback must have the same purpose. */
   purpose?: string;
-  [extra: string]: unknown;
+  version?: string;
+  inputs?: ModelTensor[];
+  outputs?: ModelTensor[];
+  tickHz?: number;
+  deterministic?: boolean;
+  seed?: number;
+  sizeBytesMax?: number;
+  license?: string;
+  /** ID of same-purpose rules model when ONNX is unavailable; no chains. */
+  fallback?: string;
 }
+
+/** Per-runtime model caps when a descriptor does not supply sizeBytesMax. */
+export const MODEL_SIZE_CAPS = { rules: 64 * 1024, onnx: 50 * 1024 } as const;
 
 export interface LayerEntry {
   id: string;
