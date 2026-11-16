@@ -59,9 +59,13 @@ Why two numbers:
 ### Optional runtimes: `requires[]` is the gate, the deferred budget is the cap
 
 A world that needs the ONNX runtime declares `requires: ["runtime.onnx"]`.
-When it does, the player lazy-loads the runtime as a deferred chunk. Today
-that chunk is ~107 KiB gzip — 21% of the 512 KiB per-deferred-chunk budget,
-79% headroom.
+When it does, the player lazy-loads the runtime as a deferred chunk. As of
+dev b1beba5 no world requires `runtime.onnx`, so the player has **zero**
+deferred chunks and zero runtime WASM: the rebounder uses a hand-written JS
+MLP (Option A, < 2 KiB). If `onnxruntime-web` glue lands later it is
+projected at ~107 KiB gzip (21% of the 512 KiB per-deferred-chunk budget);
+the ~28 MiB onnxruntime WASM still requires a Phase Two spec decision to
+raise `playerRuntimeWasmGzipBytes` from 0.
 
 We deliberately do **not** have a separate `onnxRuntimeGzipBytes` row in
 Phase One:
