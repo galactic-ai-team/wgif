@@ -146,3 +146,20 @@ describe('walker', () => {
     expect(w.grounded).toBe(true);
   });
 });
+
+describe('walker vectors', () => {
+  it('writes the same vectors into caller-owned arrays as the getters return', () => {
+    const w = new Walker(arena());
+    for (const [yaw, pitch] of [[0, 0], [0.7, 0.3], [-2.1, -1.2], [3, 1.4]] as const) {
+      w.yaw = yaw;
+      w.pitch = pitch;
+      const out: [number, number, number] = [9, 9, 9];
+      expect(w.eyeInto(out)).toBe(out);
+      expect(out).toEqual(w.eye);
+      expect(w.forwardInto([0, 0, 0])).toEqual(w.forward);
+      expect(w.rightInto([0, 0, 0])).toEqual(w.right);
+      const up = w.upInto([0, 0, 0]);
+      w.up.forEach((v, i) => expect(up[i]).toBeCloseTo(v, 12));
+    }
+  });
+});

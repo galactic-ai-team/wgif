@@ -63,21 +63,44 @@ export class Walker {
   }
 
   get eye(): Vec3 {
-    return [this.feet[0], this.feet[1] + this.eyeHeight, this.feet[2]];
+    return this.eyeInto([0, 0, 0]);
   }
 
   /** Unit view direction, including pitch. */
   get forward(): Vec3 {
-    const c = Math.cos(this.pitch);
-    return [-Math.sin(this.yaw) * c, Math.sin(this.pitch), -Math.cos(this.yaw) * c];
+    return this.forwardInto([0, 0, 0]);
   }
 
   get right(): Vec3 {
-    return [Math.cos(this.yaw), 0, -Math.sin(this.yaw)];
+    return this.rightInto([0, 0, 0]);
   }
 
   get up(): Vec3 {
     return cross(this.right, this.forward);
+  }
+
+  // The *Into forms write into a vector the caller owns, for code that runs every frame.
+  eyeInto(out: Vec3): Vec3 {
+    out[0] = this.feet[0]; out[1] = this.feet[1] + this.eyeHeight; out[2] = this.feet[2];
+    return out;
+  }
+
+  forwardInto(out: Vec3): Vec3 {
+    const c = Math.cos(this.pitch);
+    out[0] = -Math.sin(this.yaw) * c; out[1] = Math.sin(this.pitch); out[2] = -Math.cos(this.yaw) * c;
+    return out;
+  }
+
+  rightInto(out: Vec3): Vec3 {
+    out[0] = Math.cos(this.yaw); out[1] = 0; out[2] = -Math.sin(this.yaw);
+    return out;
+  }
+
+  /** Up relative to the view, right × forward, which works out to (sin yaw · sin pitch, cos pitch, cos yaw · sin pitch). */
+  upInto(out: Vec3): Vec3 {
+    const sp = Math.sin(this.pitch);
+    out[0] = Math.sin(this.yaw) * sp; out[1] = Math.cos(this.pitch); out[2] = Math.cos(this.yaw) * sp;
+    return out;
   }
 
   /** Places the walker with its eye at `eye`, then drops it onto the ground below. */

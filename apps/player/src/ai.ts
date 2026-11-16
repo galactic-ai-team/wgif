@@ -46,6 +46,8 @@ export class RebounderAgent implements WorldAgent {
   private seenStep = 0;
   private pending: Promise<unknown> | null = null;
   private carriedFor = 0;
+  /** Simulated time not yet handed to the hook. */
+  private clock = 0;
   /** Where the ball was left for a player who could not take it. The NPC leaves it alone while it stays there. */
   private parked: Vec3 | null = null;
 
@@ -64,6 +66,7 @@ export class RebounderAgent implements WorldAgent {
     this.action = IDLE;
     this.seenStep = 0;
     this.carriedFor = 0;
+    this.clock = 0;
     this.parked = null;
     this.body.position[0] = this.home[0]; this.body.position[1] = this.home[1]; this.body.position[2] = this.home[2];
   }
@@ -108,9 +111,14 @@ export class RebounderAgent implements WorldAgent {
       if (world.carry(ball.id, [pos[0], pos[1] + CARRY_HEIGHT, pos[2]])) this.parked = null;
     }
 
-    // 4. Feed the hook. It steps the model at the model's own rate and never overlaps two steps.
+    // 4. Feed the hook at the model's own rate. Calling it on every 120 Hz tick would only build
+    //    observations and promises it throws away (PERF.md fix #7). It never overlaps two steps.
     if (this.failed) return;
-    const pending = this.hook.tick(dt, this.observe(world, ball)).catch((error: unknown) => {
+    this.clock += dt;
+    if (this.clock < 1 / this.info.tickHz) return;
+    const elapsed = this.clock;
+    this.clock = 0;
+    const pending = this.hook.tick(elapsed, this.observe(world, ball)).catch((error: unknown) => {
       // A model error must never stop the world: the NPC stands still from here on.
       this.failed = error instanceof Error ? error : new Error(String(error));
       this.hook.dispose();

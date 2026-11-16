@@ -1,6 +1,6 @@
-import { unpackWgif, type Vec3, type WgifWorld } from '@wgif/format';
+import { signingHash, unpackWgif, type Vec3, type WgifWorld } from '@wgif/format';
 import { applyEdits, layerOps, parseLayer, type EditOp, type LayerFile, type SceneOp } from './edit.js';
-import { isJson, parseGameState, parseInteractions, readJson, type GameState, type Interactions } from './interactions.js';
+import { isJson, parseGameState, parseInteractions, readJson, type GameState, type Interactions, type Json } from './interactions.js';
 
 /** Capabilities actually implemented by this player, not merely known to the WGIF spec. */
 const PLAYER_CAPABILITIES = new Set([
@@ -82,6 +82,14 @@ export type EditPolicy =
 /** A world as the player runs it: the container plus its interactions, layers and initial state, resolved. */
 export interface WorldDocument {
   world: WgifWorld;
+  /** Hash of the signed view of the manifest. Layers do not change it. */
+  signingHash: string;
+  /** Key for local saves: world id + signing hash. */
+  saveKey: string;
+  /** interactions.json as written in the file. Edits are applied to a copy of this on export. */
+  interactionsRaw: Json | null;
+  /** Ids in use (interaction objects and layer primitives), so new primitives get a free one. */
+  ids: Set<string>;
   /** Interactions with every layer applied. */
   interactions: Interactions;
   /** What the layers do to the scene graph, in order (see src/sceneBridge.ts). */
@@ -99,6 +107,8 @@ export function editPolicy(mode: WgifWorld['manifest']['mode']): EditPolicy {
   return mode === 'editable' ? { canEdit: true, via: 'base' } : mode === 'layered' ? { canEdit: true, via: 'layer' } : { canEdit: false, via: null };
 }
 
+export const saveKey = (id: string, hash: string): string => `${id}@${hash}`;
+
 /** Reads a validated world's interactions, layers and state. Never throws: what it cannot use becomes a warning. */
 export async function loadDocument(world: WgifWorld): Promise<WorldDocument> {
   const { manifest, files } = world;
@@ -108,24 +118,38 @@ export async function loadDocument(world: WgifWorld): Promise<WorldDocument> {
 
   // Layers only count in a layered world (the validator rejects them anywhere else).
   const layers: LoadedLayer[] = [];
-  const ops: EditOp[] = [];
   for (const entry of manifest.mode === 'layered' ? (manifest.layers ?? []) : []) {
     const parsed = parseLayer(readJson(files[entry.path]));
     layers.push({ id: entry.id, path: entry.path, author: entry.author, ...(entry.created ? { created: entry.created } : {}), file: parsed.layer, ok: parsed.ok });
     if (!parsed.ok) warnings.push(`layer "${entry.id}" could not be read and was skipped`);
     else if (parsed.skipped > 0) warnings.push(`layer "${entry.id}": ${parsed.skipped} operation(s) could not be used and were skipped`);
-    ops.push(...layerOps(parsed.layer));
   }
-  const resolved = applyEdits(isJson(rawInteractions) ? rawInteractions : null, ops, 'layer');
+  const hash = await signingHash(manifest);
+  const state = parseGameState(statePath ? readJson(files[statePath]) : null);
+  return resolve(world, isJson(rawInteractions) ? rawInteractions : null, state, layers, [], hash, warnings);
+}
+
+/** The same document with unsaved edits applied on top of its layers: what the editor shows. */
+export function withEdits(doc: WorldDocument, edits: EditOp[]): WorldDocument {
+  return resolve(doc.world, doc.interactionsRaw, doc.initialState, doc.layers, edits, doc.signingHash, []);
+}
+
+function resolve(world: WgifWorld, base: Json | null, state: GameState, layers: LoadedLayer[], edits: EditOp[], hash: string, warnings: string[]): WorldDocument {
+  const { manifest } = world;
+  const resolved = applyEdits(base, [...layers.flatMap((l) => layerOps(l.file)), ...edits], 'layer');
   const parsed = parseInteractions(resolved.interactions);
   const cam = parsed.interactions.camera;
   return {
     world,
+    signingHash: hash,
+    saveKey: saveKey(manifest.id, hash),
+    interactionsRaw: base,
+    ids: resolved.ids,
     interactions: parsed.interactions,
     sceneOps: resolved.sceneOps,
     layers,
-    spawn: manifest.spawn ?? (cam.spawn ? { position: cam.spawn, ...(cam.lookAt ? { lookAt: cam.lookAt } : {}) } : null),
-    initialState: parseGameState(statePath ? readJson(files[statePath]) : null),
+    spawn: resolved.spawn ?? manifest.spawn ?? (cam.spawn ? { position: cam.spawn, ...(cam.lookAt ? { lookAt: cam.lookAt } : {}) } : null),
+    initialState: state,
     policy: editPolicy(manifest.mode),
     warnings: [...warnings, ...resolved.warnings, ...parsed.warnings],
   };

@@ -20,6 +20,7 @@
         <button class="btn" id="sample" type="button">Load sample court</button>
         <button class="btn" id="mode" type="button" disabled>Mode: Orbit</button>
         <button class="btn primary" id="play" type="button" hidden>▶ Shootout</button>
+        <button class="btn" id="edit" type="button" aria-pressed="false" hidden>Edit</button>
         <button class="btn" id="mute" type="button" aria-pressed="false" aria-label="Sound">🔊</button>
       </div>
     </header>
@@ -56,6 +57,21 @@
         <button id="action" class="touch-btn" type="button" hidden>Grab</button>
         <button id="ballreset" class="touch-btn small" type="button" aria-label="Put the ball back" hidden>↺</button>
 
+        <div id="editor" class="panel" hidden>
+          <strong>Edit</strong> <span id="ed-count" class="muted"></span>
+          <p id="ed-note" class="muted"></p>
+          <button class="btn" id="ed-ball" type="button">Put the ball's start here</button>
+          <button class="btn" id="ed-block" type="button">Add a block here</button>
+          <button class="btn" id="ed-spawn" type="button">Visitors start where I stand</button>
+          <div id="ed-rules">
+            <label>Seconds <input id="ed-duration" type="number" min="5" max="600" step="5" inputmode="numeric" /></label>
+            <label>Points <input id="ed-points" type="number" min="1" max="10" step="1" inputmode="numeric" /></label>
+          </div>
+          <div class="row">
+            <button class="btn" id="ed-undo" type="button" disabled>Undo</button>
+            <button class="btn" id="ed-discard" type="button" disabled>Discard edits</button>
+          </div>
+        </div>
         <pre id="perf" hidden></pre>
         <div id="hint" class="hint" hidden></div>
       </div>
@@ -71,6 +87,16 @@
         <section id="game" hidden>
           <h3>Shootout</h3>
           <p id="game-stats" class="small"></p>
+        </section>
+        <section id="share">
+          <h3>Save and export</h3>
+          <p id="save-note" class="small muted"></p>
+          <div id="export-box">
+            <label class="field">Your name <input id="by" type="text" maxlength="80" autocomplete="name" placeholder="for the history" /></label>
+            <button class="btn" id="export" type="button">Export .wgif</button>
+            <button class="btn" id="reopen" type="button" hidden>Open the exported copy</button>
+          </div>
+          <button class="btn" id="forget" type="button">Reset progress</button>
         </section>
         <section id="layers-box" hidden>
           <h3>Layers</h3>
