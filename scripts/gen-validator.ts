@@ -48,14 +48,14 @@ async function makeAjv(schemaUri: string | undefined): Promise<{
   const standaloneCode = standaloneMod.default
 
   if (schemaUri?.includes('2020-12')) {
-    const Ajv2020 = (await import('ajv/dist/2020.js')).default
+    const Ajv2020 = (await import('ajv/dist/2020.js')).default.default
     return { ajv: new Ajv2020(opts), standaloneCode, draft: '2020-12' }
   }
   if (schemaUri?.includes('2019-09')) {
-    const Ajv2019 = (await import('ajv/dist/2019.js')).default
+    const Ajv2019 = (await import('ajv/dist/2019.js')).default.default
     return { ajv: new Ajv2019(opts), standaloneCode, draft: '2019-09' }
   }
-  const Ajv = (await import('ajv')).default
+  const Ajv = (await import('ajv')).default.default
   return { ajv: new Ajv(opts), standaloneCode, draft: '07' }
 }
 
@@ -73,6 +73,7 @@ export async function generate(
   } catch (err) {
     throw new Error(
       `gen-validator: ajv (draft ${draft}) could not compile ${schemaRel}: ${(err as Error).message}`,
+      { cause: err },
     )
   }
   const code = standaloneCode(ajv, validate)
