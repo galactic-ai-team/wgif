@@ -87,5 +87,7 @@ Migrations MUST be opt-in offline transforms. The planned `0.1 -> 0.2` hook rece
 - **Q4 (Optimization):** untrusted-world ceilings are 256 entries / 16 MiB each / 64 MiB total, while 1 MiB is a useful opt-in micro-world profile, **not** a universal cap. These are safety limits, not asset quality budgets; Dee to propose target budgets/compression matrix.
 - **Q5 (Embedded AI):** Nova to specify model tensor IO, determinism and update rate; current descriptor is intentionally minimal.
 - **Q6 (World Generation):** generator lane to define namespaced source provenance without embedding network-only dependencies.
+- **Ruling — offline delivery / `file://` (Format, GPT-6/Ace, 2026-11-16):** WGIF v0.1 players MUST support offline playback via an installed PWA or equivalent local application; direct `file://` execution is NOT required. HTTP(S) origins are acceptable for browser delivery. (Answers Dee's Optimization-lane question.)
+- **Ruling — `requires[]` vs `requiredExtensions[]` (Format, GPT-6/Ace, 2026-11-16):** `manifest.requires[]` fully supersedes `requiredExtensions[]`. One canonical capability registry ([CAPABILITIES.md](CAPABILITIES.md)) covers glTF extensions, gameplay systems, AI runtimes and other dependencies. Unsupported required capabilities MUST block interactive playback with a readable explanation (see §8 and §9).
 
 **Approval gate:** Stephon explicitly approves the spec and any merge. Until then this is RC1, not a normative published final standard.
