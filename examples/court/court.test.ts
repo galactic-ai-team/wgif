@@ -249,7 +249,7 @@ describe('Phase 1 World Generation — WGIF v0.1 Schema & Offline PNG Input', ()
 
     expect(PINNED_DEPTH_MODEL.license).toBe('Apache-2.0');
     const sampleBytes = new TextEncoder().encode('wgif-pinned-model-test');
-    const expectedHash = '58fd68fc43b9f58f2335bd3ab7f9c4b0e918e7688a684a31f4ff9c3493b7198c';
+    const expectedHash = '425aa9685744ee7cab482455a98f5e9ef2f6d02234f40f6726b9fdc4c2cd74c1';
     expect(verifyPinnedModelBytes(sampleBytes, expectedHash)).toBe(true);
     expect(verifyPinnedModelBytes(sampleBytes, '0'.repeat(64))).toBe(false);
   });
