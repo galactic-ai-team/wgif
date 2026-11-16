@@ -1,14 +1,11 @@
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import {
-  buildReport,
   checkBudgets,
   formatBytes,
-  gzipBytes,
-  loadBudgets,
   measureWorld,
   parseArgs,
   readZipDirectory,
