@@ -20,7 +20,9 @@ export interface PackOptions {
   level?: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
 }
 
-const REPRODUCIBLE_MTIME = new Date('2000-01-01T00:00:00Z');
+// ZIP (DOS) timestamps have no timezone and fflate writes them in *local* time, so build the
+// date from local fields: every machine then writes the same bytes (1980-based DOS 2000-01-01 00:00).
+const reproducibleMtime = (): Date => new Date(2000, 0, 1, 0, 0, 0);
 
 function inferRole(m: ManifestInput, path: string): FileRole {
   if (path === m.entry.scene) return 'scene';
@@ -66,7 +68,7 @@ export async function packWgif(manifest: ManifestInput, files: WgifFiles, opts: 
  * manifest.json is always the first entry and always stored uncompressed so sniffers can find it.
  */
 export function packManifestAndFiles(manifest: WgifManifest, files: WgifFiles, opts: PackOptions = {}): Uint8Array {
-  const mtime = opts.mtime ?? REPRODUCIBLE_MTIME;
+  const mtime = opts.mtime ?? reproducibleMtime();
   const level = opts.level ?? 9;
   const zippable: Zippable = {};
   zippable[MANIFEST_PATH] = [utf8(JSON.stringify(manifest, null, 2) + '\n'), { level: 0, mtime }];

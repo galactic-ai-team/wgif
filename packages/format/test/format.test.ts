@@ -57,6 +57,17 @@ describe('pack / unpack', () => {
     expect(await packWgif(manifest, files)).toEqual(await packWgif(manifest, files));
   });
 
+  it('writes the same bytes in any timezone', async () => {
+    const { manifest, files } = sample();
+    const before = process.env.TZ;
+    process.env.TZ = 'UTC';
+    const a = await packWgif(manifest, files);
+    process.env.TZ = 'Asia/Tokyo';
+    const b = await packWgif(manifest, files);
+    process.env.TZ = before;
+    expect(a).toEqual(b);
+  });
+
   it('writes manifest.json as the first, stored entry', async () => {
     const { manifest, files } = sample();
     const bytes = await packWgif(manifest, files);

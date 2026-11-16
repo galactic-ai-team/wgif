@@ -33,7 +33,7 @@ Non-goals for v0.1: DRM, executable scripting (see §5.6), streaming or very lar
 - `manifest.json` MUST be the **first** local entry and MUST be **stored** (uncompressed). This lets
   sniffers identify a WGIF by reading the first ~100 bytes (`PK\x03\x04` … `manifest.json` … `"wgif"`).
 - Writers SHOULD produce reproducible output: entries sorted by path after the manifest, and a fixed
-  entry timestamp (the reference writer uses 2000-01-01T00:00:00Z).
+  entry timestamp (the reference writer uses DOS time 2000-01-01 00:00, written identically in every timezone).
 
 > Open question (Q1): should the preview also be prepended *outside* the ZIP, as a real GIF
 > polyglot, so `.wgif` files render as GIFs in apps that only sniff the magic bytes? ZIP readers
