@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "start": "tsx src/cli.ts"
+    "start": "tsx src/cli.ts",
+    "fetch-model": "tsx src/fetch-model.ts"
   }
 }
