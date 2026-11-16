@@ -5,9 +5,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildReproducibleCourtArtifacts } from './src/pack-court.js';
 import { encodeDeterministicPng, zlibCompressDeterministic } from './src/prng.js';
-import { buildWorldFromImage } from '../../tools/img2world/src/img2world.js';
+import {
+  buildWorldFromImage,
+  medianFilter3x3,
+  resampleDepthBilinear,
+} from '../../tools/img2world/src/img2world.js';
 import { decodePngToRgba } from '../../tools/img2world/src/png-decode.js';
 import { runCli } from '../../tools/img2world/src/cli.js';
+import {
+  PINNED_DEPTH_MODEL,
+  verifyPinnedModelBytes,
+} from '../../tools/img2world/src/fetch-model.js';
 
 function inspectFirstZipEntry(zipBytes: Uint8Array): {
   name: string;
@@ -188,5 +196,61 @@ describe('Phase 1 World Generation — WGIF v0.1 Schema & Offline PNG Input', ()
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  it('resamples mismatched depth dimensions bilinearly and removes salt-and-pepper spikes with medianFilter3x3', () => {
+    const srcW = 4;
+    const srcH = 4;
+    const src = new Float32Array([
+      0.2, 0.2, 0.2, 0.2,
+      0.2, 0.99, 0.2, 0.2,
+      0.2, 0.2, 0.2, 0.2,
+      0.2, 0.2, 0.2, 0.2,
+    ]);
+
+    const filtered = medianFilter3x3(src, srcW, srcH);
+    // Single spike 0.99 at (1,1) surrounded by 0.2 should be replaced by 0.2
+    expect(filtered[1 * srcW + 1]).toBeCloseTo(0.2, 5);
+
+    const resampled = resampleDepthBilinear(filtered, srcW, srcH, 8, 6);
+    expect(resampled.length).toBe(8 * 6);
+    for (let i = 0; i < resampled.length; i++) {
+      expect(resampled[i]).toBeCloseTo(0.2, 5);
+    }
+  });
+
+  it('emits KHR_materials_unlit on img2world glTF scenes and verifies SHA-256 model pins', async () => {
+    const w = 16;
+    const h = 12;
+    const rgba = new Uint8Array(w * h * 4).fill(200);
+    const res = await buildWorldFromImage({
+      imageRgba: rgba,
+      width: w,
+      height: h,
+      gridWidth: 8,
+      gridHeight: 6,
+      syntheticDepth: true,
+    });
+
+    const dv = new DataView(
+      res.glbBytes.buffer,
+      res.glbBytes.byteOffset,
+      res.glbBytes.byteLength
+    );
+    const jsonLen = dv.getUint32(12, true);
+    const gltf = JSON.parse(
+      new TextDecoder().decode(res.glbBytes.subarray(20, 20 + jsonLen))
+    );
+
+    expect(gltf.extensionsUsed).toContain('KHR_materials_unlit');
+    expect(gltf.materials[0].extensions).toEqual({
+      KHR_materials_unlit: {},
+    });
+
+    expect(PINNED_DEPTH_MODEL.license).toBe('Apache-2.0');
+    const sampleBytes = new TextEncoder().encode('wgif-pinned-model-test');
+    const expectedHash = '58fd68fc43b9f58f2335bd3ab7f9c4b0e918e7688a684a31f4ff9c3493b7198c';
+    expect(verifyPinnedModelBytes(sampleBytes, expectedHash)).toBe(true);
+    expect(verifyPinnedModelBytes(sampleBytes, '0'.repeat(64))).toBe(false);
   });
 });
