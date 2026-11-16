@@ -21,7 +21,7 @@ export interface Img2WorldOptions {
   syntheticDepth?: boolean;
   modelId?: string;
   creator?: Rc1Creator;
-  mode?: 'locked' | 'editable';
+  mode?: 'locked' | 'editable' | 'layered';
 }
 
 export interface Img2WorldOutput {
@@ -251,7 +251,17 @@ export async function buildWorldFromImage(
     ],
     provenance: {
       parent: `sha256:${sourceImageSha256}`,
-      generator: `@wgif/img2world@0.1.0 (origin=image-to-world;model=${modelUsed};license=${license};grid=${gw}x${gh};fov=${fovDeg};depthScale=${depthScale};maxStretch=${maxStretch})`,
+      generator: '@wgif/img2world@0.1.0',
+      params: {
+        origin: 'image-to-world',
+        model: modelUsed,
+        license,
+        source_sha256: sourceImageSha256,
+        grid_size: [gw, gh],
+        fov_deg: fovDeg,
+        depth_scale: depthScale,
+        max_edge_stretch: maxStretch,
+      },
     },
   };
 

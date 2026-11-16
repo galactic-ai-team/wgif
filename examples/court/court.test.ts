@@ -48,12 +48,12 @@ describe('Phase 1 World Generation — Strict GPT-6 v0.1 RC1 Schema Compliance',
     expect(Buffer.compare(run1.wgifBytes, run2.wgifBytes)).toBe(0);
   });
 
-  it('emits only allowed RC1 provenance keys (parent, generator, history) and stores manifest.json FIRST with method=0', () => {
+  it('emits only allowed v0.1 RC1 provenance keys (parent, generator, params, history) and stores manifest.json FIRST with method=0', () => {
     const { manifest, wgifBytes } = buildReproducibleCourtArtifacts();
 
     expect(typeof manifest.creator).toBe('object');
     expect(manifest.creator.name).toBe('Galactic AI Team');
-    expect(['locked', 'editable']).toContain(manifest.mode);
+    expect(['locked', 'editable', 'layered']).toContain(manifest.mode);
 
     for (const f of manifest.files) {
       expect(typeof f.path).toBe('string');
@@ -82,7 +82,11 @@ describe('Phase 1 World Generation — Strict GPT-6 v0.1 RC1 Schema Compliance',
     expect(first.compressedSize).toBe(first.uncompressedSize);
 
     const parsed = JSON.parse(new TextDecoder().decode(first.payload));
-    expect(Object.keys(parsed.provenance)).toEqual(['generator']);
+    expect(Object.keys(parsed.provenance)).toEqual(['generator', 'params']);
+    expect(parsed.provenance.params).toEqual({
+      origin: 'procedural',
+      seed: 1464293702,
+    });
   });
 
   it('meets Spec 5.2 constraints on preview.gif (<= 512 px, <= 256 KB, valid GIF89a)', () => {
@@ -123,12 +127,16 @@ describe('Phase 1 World Generation — Strict GPT-6 v0.1 RC1 Schema Compliance',
       syntheticDepth: true,
     });
 
-    const allowedProvKeys = new Set(['parent', 'generator', 'history']);
+    const allowedProvKeys = new Set(['parent', 'generator', 'params', 'history']);
     for (const k of Object.keys(res.manifest.provenance)) {
       expect(allowedProvKeys.has(k)).toBe(true);
     }
     expect(res.manifest.provenance.parent).toMatch(/^sha256:[0-9a-f]{64}$/);
-    expect(res.manifest.provenance.generator).toContain('@wgif/img2world@0.1.0');
+    expect(res.manifest.provenance.generator).toBe('@wgif/img2world@0.1.0');
+    expect(res.manifest.provenance.params).toMatchObject({
+      origin: 'image-to-world',
+      grid_size: [16, 12],
+    });
 
     const first = inspectFirstZipEntry(res.wgifBytes);
     expect(first.name).toBe('manifest.json');
