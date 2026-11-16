@@ -31,13 +31,49 @@ export interface FileEntry {
   role?: FileRole;
 }
 
+/**
+ * One input/output of an embedded model (manifest.models[] entry).
+ * For `rules` models these are named observation/action fields (shape/dtype omitted).
+ * For `onnx` models these are tensors: shape and dtype are required and MUST match the graph.
+ * Full convention: packages/format/schema/model-descriptor.v0.1.schema.json,
+ * docs/SPEC-5.5-models-proposal.md. Owned by the Embedded AI lane.
+ */
+export interface ModelTensor {
+  name: string;
+  /** Tensor shape, e.g. [1, 8]. First dimension is the batch (always 1 in v0.1). */
+  shape?: number[];
+  dtype?: 'float32' | 'int32' | 'int64' | 'bool';
+  description?: string;
+  /** Expected [min, max] of the values; players SHOULD clamp inputs to this range. */
+  range?: [number, number];
+}
+
 export interface ModelEntry {
   id: string;
+  /** Relative POSIX path; model files MUST live under models/. */
   path: string;
   runtime: 'rules' | 'onnx';
+  /** What the model does in this world, e.g. "rebounder". Players match by purpose, not id. */
   purpose?: string;
-  [extra: string]: unknown;
+  version?: string;
+  inputs?: ModelTensor[];
+  outputs?: ModelTensor[];
+  /** How often the player MUST step the model (1-60 Hz; 10 Hz is the v0.1 default). */
+  tickHz?: number;
+  /** True when the same observation sequence always gives the same actions. */
+  deterministic?: boolean;
+  /** Deterministic seed (uint32). REQUIRED when deterministic is true. */
+  seed?: number;
+  /** Hard cap on the model's uncompressed byte size. Defaults: rules 65536, onnx 51200. */
+  sizeBytesMax?: number;
+  /** SPDX id or free text for the model file itself. */
+  license?: string;
+  /** Id of another model in the same manifest to use when this one cannot run. No chains. */
+  fallback?: string;
 }
+
+/** Default per-runtime size caps (bytes) when a descriptor omits sizeBytesMax. */
+export const MODEL_SIZE_CAPS = { rules: 64 * 1024, onnx: 50 * 1024 } as const;
 
 export interface LayerEntry {
   id: string;

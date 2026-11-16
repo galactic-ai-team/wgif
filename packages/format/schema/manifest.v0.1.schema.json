@@ -88,19 +88,9 @@
       }
     },
     "models": {
-      "description": "Optional embedded AI models. Packaging convention owned by the Embedded AI lane.",
+      "description": "Optional embedded AI models. Packaging convention owned by the Embedded AI lane (docs/SPEC-5.5-models-proposal.md). Each entry is validated against definitions.modelDescriptor, which MUST stay identical to schema/model-descriptor.v0.1.schema.json (enforced by a format test).",
       "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["id", "path", "runtime"],
-        "additionalProperties": true,
-        "properties": {
-          "id": { "type": "string", "minLength": 1 },
-          "path": { "$ref": "#/definitions/path" },
-          "runtime": { "enum": ["rules", "onnx"] },
-          "purpose": { "type": "string" }
-        }
-      }
+      "items": { "$ref": "#/definitions/modelDescriptor" }
     },
     "layers": {
       "description": "Ordered user layers applied on top of the base world (mode = layered).",
@@ -180,6 +170,175 @@
       "minItems": 3,
       "maxItems": 3,
       "items": { "type": "number" }
+    },
+    "modelDescriptor": {
+      "additionalProperties": false,
+      "description": "One entry of manifest.models[]. Self-contained: it is copied verbatim into manifest.v0.1.schema.json as definitions.modelDescriptor (the manifest copy is authoritative for validation; a format test asserts the two stay identical). See docs/SPEC-5.5-models-proposal.md. Owned by the Embedded AI lane. Rules the JSON Schema cannot express are enforced by validateWorld: an onnx model MUST give shape+dtype for every input/output (error models.tensor), and deterministic:true REQUIRES a seed (error models.seed).",
+      "properties": {
+        "deterministic": {
+          "description": "True when the same observation sequence always produces the same action sequence. Rules models MUST be deterministic. ONNX models SHOULD be (fixed seed, no sampling).",
+          "type": "boolean"
+        },
+        "fallback": {
+          "description": "Id of another model in the same manifest to use when this one cannot run (missing runtime, oversize, failed load). A fallback MUST NOT itself declare a fallback (no chains). The fallback SHOULD be a rules model.",
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "type": "string"
+        },
+        "id": {
+          "description": "Stable model id, unique within the manifest. Referenced by other models' fallback.",
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "type": "string"
+        },
+        "inputs": {
+          "description": "Observation the model consumes, in order. For \"rules\" these are named observation fields (shape/dtype omitted). For \"onnx\" these are input tensors: shape and dtype are REQUIRED and MUST match the graph (enforced by validateWorld, error models.tensor).",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "description": {
+                "maxLength": 500,
+                "type": "string"
+              },
+              "dtype": {
+                "enum": [
+                  "float32",
+                  "int32",
+                  "int64",
+                  "bool"
+                ]
+              },
+              "name": {
+                "pattern": "^[a-z][a-z0-9_]{0,63}$",
+                "type": "string"
+              },
+              "range": {
+                "description": "Expected [min, max] of the values (per element for tensors). Players SHOULD clamp inputs to this range.",
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 2,
+                "minItems": 2,
+                "type": "array"
+              },
+              "shape": {
+                "description": "Tensor shape, e.g. [1, 8]. The first dimension is the batch (always 1 in v0.1).",
+                "items": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "license": {
+          "description": "SPDX id or free text for the model file itself (may differ from the world's license).",
+          "maxLength": 200,
+          "type": "string"
+        },
+        "outputs": {
+          "description": "Action the model produces, in order. Same shape rules as inputs: tensors for \"onnx\" (shape+dtype required, error models.tensor), named fields for \"rules\".",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "description": {
+                "maxLength": 500,
+                "type": "string"
+              },
+              "dtype": {
+                "enum": [
+                  "float32",
+                  "int32",
+                  "int64",
+                  "bool"
+                ]
+              },
+              "name": {
+                "pattern": "^[a-z][a-z0-9_]{0,63}$",
+                "type": "string"
+              },
+              "range": {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 2,
+                "minItems": 2,
+                "type": "array"
+              },
+              "shape": {
+                "items": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "path": {
+          "description": "Relative POSIX path inside the container. Model files MUST live under models/.",
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^models/(?!.*(^|/)\\.\\.(/|$))(?!.*\\\\)[^\\u0000]+$",
+          "type": "string"
+        },
+        "purpose": {
+          "description": "What the model does in this world, e.g. \"rebounder\". Players match models to behaviours by purpose, not by id.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "runtime": {
+          "description": "\"rules\" is a declarative JSON behaviour table, interpreted by the player's built-in rules engine. \"onnx\" is an ONNX graph run on-device (ONNX Runtime Web, WASM, CPU). No other runtime is valid in v0.1.",
+          "enum": [
+            "rules",
+            "onnx"
+          ]
+        },
+        "seed": {
+          "description": "Deterministic seed (uint32). REQUIRED when deterministic is true. Rules models record it; they use no randomness. ONNX models use it for any sampling/dropout at export time.",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sizeBytesMax": {
+          "description": "Hard cap on the model's uncompressed byte size. Defaults by runtime when omitted: rules 65536, onnx 51200 (50 KiB). The validator rejects a world whose model file exceeds its cap.",
+          "maximum": 1048576,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "tickHz": {
+          "description": "How often the player MUST step the model. 1-60 Hz; 10 Hz is the v0.1 default. The player interpolates movement between ticks; the model MUST NOT depend on wall-clock time.",
+          "maximum": 60,
+          "minimum": 1,
+          "type": "number"
+        },
+        "version": {
+          "description": "Model version, semver-ish. A new version of the same model keeps the same id.",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "path",
+        "runtime"
+      ],
+      "title": "WGIF embedded model descriptor v0.1 (draft)",
+      "type": "object"
     }
   }
 }

@@ -2,7 +2,7 @@ import { Ajv, type ErrorObject } from 'ajv';
 import schema from '../schema/manifest.v0.1.schema.json';
 import { verifyManifestSignature } from './signing.js';
 import type { ValidationIssue, ValidationReport, WgifFiles, WgifManifest } from './types.js';
-import { WGIF_VERSION } from './types.js';
+import { MODEL_SIZE_CAPS, WGIF_VERSION } from './types.js';
 import { isSafePath, sha256Hex } from './util.js';
 
 const ajv = new Ajv({ allErrors: true, strict: true });
@@ -78,6 +78,48 @@ export async function validateWorld(manifest: unknown, files: WgifFiles): Promis
     if (bytes.byteLength !== entry.size) err('files.size', `"${path}" is ${bytes.byteLength} bytes, manifest says ${entry.size}`, path);
     const hash = await sha256Hex(bytes);
     if (hash !== entry.sha256) err('files.hash', `"${path}" hash mismatch`, path);
+  }
+
+  // Embedded models (SPEC §5.5): checks the schema cannot do — duplicate ids,
+  // fallback targets (no chains, no self-fallback), the per-runtime size cap
+  // against the actual file bytes, onnx tensor declarations, and the
+  // deterministic/seed rule. Path, tick rate and the descriptor shape itself
+  // are enforced by the descriptor schema.
+  const modelIds = new Set<string>();
+  for (const model of m.models ?? []) {
+    if (modelIds.has(model.id)) err('models.duplicate', `duplicate model id "${model.id}"`, `models.${model.id}`);
+    modelIds.add(model.id);
+    const bytes = files[model.path];
+    if (bytes) {
+      const cap = model.sizeBytesMax ?? MODEL_SIZE_CAPS[model.runtime];
+      if (bytes.byteLength > cap) err('models.oversize', `model "${model.id}" is ${bytes.byteLength} bytes, cap is ${cap}`, model.path);
+    }
+    if (model.deterministic === true && model.seed === undefined) {
+      err('models.seed', `model "${model.id}" is deterministic but has no seed`, `models.${model.id}`);
+    }
+    if (model.runtime === 'onnx') {
+      for (const side of ['inputs', 'outputs'] as const) {
+        const fields = model[side];
+        if (!fields || fields.length === 0) {
+          err('models.tensor', `onnx model "${model.id}" must declare ${side} tensors`, `models.${model.id}`);
+        } else {
+          for (const f of fields) {
+            if (!f.shape || f.shape.length === 0 || !f.dtype) {
+              err('models.tensor', `onnx model "${model.id}" ${side} "${f.name}" must declare shape and dtype`, `models.${model.id}`);
+            }
+          }
+        }
+      }
+    }
+    if (model.fallback !== undefined) {
+      if (model.fallback === model.id) {
+        err('models.fallback', `model "${model.id}" cannot fall back to itself`, `models.${model.id}`);
+      } else {
+        const target = (m.models ?? []).find((x) => x.id === model.fallback);
+        if (!target) err('models.fallback', `model "${model.id}" falls back to unknown model "${model.fallback}"`, `models.${model.id}`);
+        else if (target.fallback !== undefined) err('models.fallback', `fallback chains are not allowed ("${model.id}" -> "${model.fallback}", which itself has a fallback)`, `models.${model.id}`);
+      }
+    }
   }
 
   if (m.mode === 'layered' && !m.layers) warn('mode.layered', 'mode is "layered" but no layers[] are present yet');

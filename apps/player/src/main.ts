@@ -1,5 +1,6 @@
 import type { WgifWorld } from '@wgif/format';
 import { WorldViewer } from './viewer.js';
+import { attachCourtAi, type CourtAi } from './ai.js';
 import { WorldOpenError, cameraHints, formatBytes, openWorld } from './world.js';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -10,6 +11,7 @@ const hint = $('hint');
 const toast = $('toast');
 
 let viewer: WorldViewer | null = null;
+let courtAi: CourtAi | null = null;
 let previewUrl: string | null = null;
 
 function showError(message: string, details: string[] = []): void {
@@ -63,12 +65,18 @@ async function openBytes(bytes: Uint8Array, name: string): Promise<void> {
     viewer.onModeChange = setHint;
     const scene = world.files[world.manifest.entry.scene];
     if (!scene) throw new WorldOpenError('Scene file missing');
+    courtAi?.dispose();
+    courtAi = null;
     await viewer.load(scene, cameraHints(world));
     $('empty').hidden = true;
     modeBtn.disabled = false;
     setHint(viewer.mode, false);
     renderInfo(world);
     document.title = `${world.manifest.title} — WGIF Player`;
+    courtAi = await attachCourtAi(world, viewer, cameraHints(world));
+    $('ai').textContent = courtAi
+      ? `Rebounder NPC: ${courtAi.runtime} model${courtAi.usedFallback ? ' (rules fallback — ONNX could not run)' : ''} · watch the violet rebounder fetch the loose ball`
+      : 'No rebounder NPC in this world.';
   } catch (e) {
     const err = e as WorldOpenError;
     showError(`${name}: ${err.message}`, err.details ?? []);

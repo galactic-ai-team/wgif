@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { zipSync } from 'fflate';
+import manifestSchema from '../schema/manifest.v0.1.schema.json';
+import descriptorSchema from '../schema/model-descriptor.v0.1.schema.json';
 import {
   exportEditedWorld,
   generateKeyPair,
@@ -134,6 +136,102 @@ describe('validation', () => {
     const world = await unpackWgif(await packWgif(manifest, files));
     expect(world.report.ok).toBe(true);
     expect(world.report.warnings.map((w) => w.code)).toContain('signature.absent');
+  });
+});
+
+describe('embedded model descriptors (§5.5, Embedded AI lane)', () => {
+  const rulesModel = {
+    id: 'rebounder-rules',
+    path: 'models/rebounder.rules.json',
+    runtime: 'rules' as const,
+    purpose: 'rebounder',
+    version: '0.1.0',
+    inputs: [
+      { name: 'ball_position', description: 'Ball position [x, y, z] in meters.' },
+      { name: 'ball_velocity', description: 'Ball velocity [x, y, z] in m/s.' },
+      { name: 'ball_held_by', description: '"player", "rebounder", or null.' },
+      { name: 'player_position', description: 'Player position [x, y, z] in meters.' },
+      { name: 'self_position', description: 'Rebounder position [x, y, z] in meters.' },
+    ],
+    outputs: [
+      { name: 'velocity', description: 'Move velocity [x, y, z] in m/s (y is always 0).' },
+      { name: 'pass_ball', description: 'True on the tick the ball is passed back.' },
+      { name: 'holding_ball', description: 'True while the rebounder carries the ball.' },
+    ],
+    tickHz: 10,
+    deterministic: true,
+    seed: 7,
+    license: 'MIT',
+  };
+
+  function withModel(models: unknown[], filesExtra: WgifFiles = {}): { manifest: ManifestInput; files: WgifFiles } {
+    const { manifest, files } = sample();
+    return {
+      manifest: { ...manifest, models: models as ManifestInput['models'] },
+      files: { ...files, 'models/rebounder.rules.json': utf8('{"version":"0.1-draft"}'), ...filesExtra },
+    };
+  }
+
+  it('keeps the standalone descriptor schema identical to the manifest copy', () => {
+    const { $id: _id, $schema: _schema, ...standalone } = descriptorSchema as Record<string, unknown>;
+    const embedded = (manifestSchema as { definitions: { modelDescriptor: unknown } }).definitions.modelDescriptor;
+    expect(embedded).toEqual(standalone);
+  });
+
+  it('accepts a well-formed rules model and round-trips it', async () => {
+    const { manifest, files } = withModel([rulesModel]);
+    const world = await unpackWgif(await packWgif(manifest, files));
+    expect(world.report.errors).toEqual([]);
+    expect(world.report.ok).toBe(true);
+    expect(world.manifest.models?.[0]?.id).toBe('rebounder-rules');
+    expect(world.manifest.files.find((f) => f.path === 'models/rebounder.rules.json')?.role).toBe('model');
+  });
+
+  it('rejects an onnx model without tensor inputs/outputs, and deterministic models without a seed', async () => {
+    const packWorld = async (models: unknown[], extra: WgifFiles = {}) => {
+      const { manifest, files } = withModel(models, extra);
+      return unpackWgif(await packWgif(manifest, files));
+    };
+    const noTensors = await packWorld([{ id: 'm', path: 'models/m.onnx', runtime: 'onnx' }], { 'models/m.onnx': utf8('fake') });
+    expect(noTensors.report.errors.map((e) => e.code)).toContain('models.tensor');
+    const noDtype = await packWorld(
+      [{ id: 'm', path: 'models/m.onnx', runtime: 'onnx', inputs: [{ name: 'obs', shape: [1, 8] }], outputs: [{ name: 'action', shape: [1, 3], dtype: 'float32' }] }],
+      { 'models/m.onnx': utf8('fake') },
+    );
+    expect(noDtype.report.errors.map((e) => e.code)).toContain('models.tensor');
+    const { seed: _seed, ...noSeedModel } = rulesModel;
+    const noSeed = await packWorld([{ ...noSeedModel, deterministic: true }]);
+    expect(noSeed.report.errors.map((e) => e.code)).toContain('models.seed');
+  });
+
+  it('rejects bad paths and bad runtimes (schema)', () => {
+    const base = { wgif: '0.1', id: 'test.world.1', title: 't', creator: { name: 'x' }, created: '2026-11-15T00:00:00Z', mode: 'editable', entry: { scene: 'world.glb', preview: 'preview.png' }, files: [] };
+    const badPath = validateManifestSchema({ ...base, models: [{ ...rulesModel, path: 'assets/rebounder.rules.json' }] });
+    expect(badPath.length).toBeGreaterThan(0);
+    const badRuntime = validateManifestSchema({ ...base, models: [{ ...rulesModel, runtime: 'tensorflow' }] });
+    expect(badRuntime.length).toBeGreaterThan(0);
+  });
+
+  it('rejects oversize models, unknown fallbacks, fallback chains and duplicate ids', async () => {
+    const packWorld = async (models: unknown[], extra: WgifFiles = {}) => {
+      const { manifest, files } = withModel(models, extra);
+      return unpackWgif(await packWgif(manifest, files));
+    };
+    const over = await packWorld([{ ...rulesModel, sizeBytesMax: 10 }]);
+    expect(over.report.errors.map((e) => e.code)).toContain('models.oversize');
+
+    const badFallback = await packWorld([{ ...rulesModel, fallback: 'nope' }]);
+    expect(badFallback.report.errors.map((e) => e.code)).toContain('models.fallback');
+
+    const onnx = { ...rulesModel, id: 'rebounder-mlp', path: 'models/rebounder-mlp.onnx', runtime: 'onnx' as const, fallback: 'rebounder-rules' };
+    const chain = await packWorld(
+      [{ ...rulesModel, fallback: 'rebounder-mlp' }, onnx],
+      { 'models/rebounder-mlp.onnx': utf8('fake-onnx') },
+    );
+    expect(chain.report.errors.map((e) => e.code)).toContain('models.fallback');
+
+    const dup = await packWorld([rulesModel, rulesModel]);
+    expect(dup.report.errors.map((e) => e.code)).toContain('models.duplicate');
   });
 });
 
