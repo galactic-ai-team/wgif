@@ -12,7 +12,8 @@
     "./schema/manifest.v0.1.schema.json": "./schema/manifest.v0.1.schema.json",
     "./schema/interactions.v0.1.schema.json": "./schema/interactions.v0.1.schema.json",
     "./schema/game-state.v0.1.schema.json": "./schema/game-state.v0.1.schema.json",
-    "./schema/layer.v0.1.schema.json": "./schema/layer.v0.1.schema.json"
+    "./schema/layer.v0.1.schema.json": "./schema/layer.v0.1.schema.json",
+    "./schema/model-descriptor.v0.1.schema.json": "./schema/model-descriptor.v0.1.schema.json"
   },
   "files": ["src", "schema", "dist", "bin"],
   "scripts": {

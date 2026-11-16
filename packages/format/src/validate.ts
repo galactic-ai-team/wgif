@@ -7,7 +7,7 @@ import { knownCapability } from './capabilities.js';
 import { externalGlbUris } from './glb.js';
 import { verifyManifestSignature } from './signing.js';
 import type { ValidationIssue, ValidationReport, WgifFiles, WgifManifest } from './types.js';
-import { WGIF_VERSION } from './types.js';
+import { MODEL_SIZE_CAPS, WGIF_VERSION } from './types.js';
 import { fromUtf8, isSafePath, sha256Hex } from './util.js';
 
 const ajv = new Ajv({ allErrors: true, strict: true });
@@ -83,6 +83,72 @@ export async function validateWorld(manifest: unknown, files: WgifFiles): Promis
     if (!bytes) { err('files.absent', `files[] declares missing "${path}"`, path); continue; }
     if (bytes.byteLength !== entry.size) err('files.size', `"${path}" is ${bytes.byteLength} bytes, manifest says ${entry.size}`, path);
     if (await sha256Hex(bytes) !== entry.sha256) err('files.hash', `"${path}" hash mismatch`, path);
+  }
+
+  // Embedded AI descriptors (§4.1). Keep these checks here, after RC1's full
+  // file-integrity checks; never replace validateWorld() with the pre-RC1 copy.
+  const modelIds = new Set<string>();
+  const modelPaths = new Set<string>();
+  const modelById = new Map((m.models ?? []).map((model) => [model.id, model]));
+  for (const model of m.models ?? []) {
+    const loc = `models.${model.id}`;
+    if (modelIds.has(model.id)) err('models.duplicate', `duplicate model id "${model.id}"`, loc);
+    modelIds.add(model.id);
+    if (modelPaths.has(model.path)) err('models.duplicate-path', `two models use "${model.path}"`, model.path);
+    modelPaths.add(model.path);
+    if (!model.path.startsWith('models/') || !isSafePath(model.path))
+      err('models.path', `model "${model.id}" MUST use a safe models/ path`, model.path);
+    if (model.runtime === 'onnx' && !model.path.endsWith('.onnx'))
+      err('models.type', `ONNX model "${model.id}" must have .onnx path`, model.path);
+    if (model.runtime === 'rules' && !model.path.endsWith('.json'))
+      err('models.type', `rules model "${model.id}" must have .json path`, model.path);
+    const bytes = files[model.path];
+    if (bytes) {
+      const cap = model.sizeBytesMax ?? MODEL_SIZE_CAPS[model.runtime];
+      if (bytes.byteLength > cap) err('models.oversize', `model "${model.id}" is ${bytes.byteLength} bytes; cap ${cap}`, model.path);
+      if (model.runtime === 'rules') {
+        try { JSON.parse(fromUtf8(bytes)); }
+        catch { err('models.rules.json', `rules model "${model.id}" must be UTF-8 JSON`, model.path); }
+      }
+    }
+    if (model.runtime === 'rules' && model.deterministic !== true)
+      err('models.deterministic', `rules model "${model.id}" MUST declare deterministic: true`, loc);
+    if (model.deterministic === true && model.seed === undefined)
+      err('models.seed', `deterministic model "${model.id}" requires a uint32 seed`, loc);
+    for (const side of ['inputs', 'outputs'] as const) {
+      const fields = model[side];
+      if (model.runtime === 'onnx' && !fields?.length) {
+        err('models.tensor', `ONNX model "${model.id}" must declare ${side}`, loc);
+        continue;
+      }
+      const names = new Set<string>();
+      for (const field of fields ?? []) {
+        if (names.has(field.name)) err('models.tensor', `duplicate ${side} name "${field.name}"`, loc);
+        names.add(field.name);
+        if (model.runtime === 'onnx') {
+          if (!field.shape?.length || !field.dtype)
+            err('models.tensor', `ONNX ${side} "${field.name}" needs shape and dtype`, loc);
+          if (field.shape && (field.shape[0] !== 1 || field.shape.reduce((a, n) => a * n, 1) > 65536))
+            err('models.tensor', `ONNX ${side} "${field.name}" exceeds v0.1 tensor shape limits`, loc);
+        } else if (field.shape || field.dtype) {
+          err('models.tensor', `rules ${side} "${field.name}" must be a named field, not a tensor`, loc);
+        }
+        if (field.range && field.range[0] > field.range[1])
+          err('models.tensor', `invalid value range for ${side} "${field.name}"`, loc);
+      }
+    }
+    if (model.fallback !== undefined) {
+      const target = modelById.get(model.fallback);
+      if (model.runtime !== 'onnx') err('models.fallback', `only ONNX models can declare fallback`, loc);
+      if (model.fallback === model.id) err('models.fallback', `model "${model.id}" cannot fall back to itself`, loc);
+      else if (!target) err('models.fallback', `unknown fallback "${model.fallback}"`, loc);
+      else {
+        if (target.fallback !== undefined) err('models.fallback', `fallback chains are forbidden`, loc);
+        if (target.runtime !== 'rules') err('models.fallback', `fallback "${target.id}" MUST use rules runtime`, loc);
+        if (!model.purpose || model.purpose !== target.purpose)
+          err('models.fallback', `fallback "${target.id}" MUST share the purpose of "${model.id}"`, loc);
+      }
+    }
   }
 
   const glb = files[m.entry.scene];
