@@ -28,7 +28,13 @@ summary for authors and players.
   `src/jsmlp.ts`) — no onnxruntime-web, no WASM, 0 B runtime-WASM budget
   (PR #3). It is an optional optimization for small MLPs, not a general
   ONNX runtime: the player does **not** claim `runtime.onnx` (see
-  `docs/CAPABILITIES.md`).
+  `docs/CAPABILITIES.md`). The evaluator verifies a supported graph
+  signature before it runs anything: the descriptor must promise exactly
+  `obs [1, 14] float32 -> action [1, 3] float32`, and the file must contain
+  the six trained tensors (`W1/b1/W2/b2/W3/b3`) as float32 with the expected
+  shapes (14→32→32→3) — anything else (wrong shapes, wrong dtypes, missing
+  weights, truncated bytes) is rejected at load and falls back to the rules
+  twin. It cannot run an arbitrary graph, and it never tries to.
 - **Fallback is same-purpose ONNX → rules only** (no ONNX → ONNX, no
   chains, no self-fallback). A broken ONNX file falls back to its declared
   rules twin and the player reports it; a broken rules model is a load
@@ -44,6 +50,22 @@ summary for authors and players.
   fallbacks with the `models.*` error codes (`duplicate`, `oversize`,
   `seed`, `tensor`, `fallback`).
 
+## What may be skipped — and what may not
+
+Only **optional** model behaviour may be skipped. The rebounder NPC is
+optional: a world with no matching model, or whose model fails to load, is
+still fully explorable — the NPC simply does not attach, and a mid-game
+model failure disables the NPC and reports it rather than breaking the
+world. Required capabilities are still enforced: a world whose `requires[]`
+names a capability the player does not advertise (for example
+`runtime.onnx` for a world with no rules fallback, or `runtime.rules` for a
+player without the rules interpreter) is refused interactive playback with a
+named diagnostic, and the player offers the preview instead. Malformed
+archives are rejected before playback, not during it: the reader validates
+the ZIP, the per-file hashes, the manifest schema and the model descriptors
+(`models.*` error codes) at unpack time, so a bad archive never reaches the
+player loop.
+
 ## The per-tick hook
 
 The player drives an NPC through `createNpcHook(world, purpose)` in
@@ -51,8 +73,14 @@ The player drives an NPC through `createNpcHook(world, purpose)` in
 `warnings`, `state` and `lastAction`, and one method the player calls every
 frame: `tick(dt, observation)`. The hook steps the model at its descriptor
 tickHz (at most 3 steps per call, so a long frame cannot spiral into
-catch-up steps) and returns the current action, so the player always has a
-velocity to integrate. The hook owns the model and the schedule; the player
-owns positions, physics and the scene. A world without a matching model, or
-whose model fails to load, is still fully explorable — the NPC simply does
-not attach.
+catch-up steps) and returns a `TickResult`: the current `action`, whether a
+step was committed (`stepped`), and the step sequence number (`step`).
+Movement velocity is persistent — the player integrates the last action's
+velocity every frame — but gameplay events are one-shot: a `passBall` is
+fresh only on a tick where `stepped` is true, so a stale action is never
+re-applied as a new event. The hook owns the model and the schedule; the
+player owns positions, physics and the scene. A model step that is still
+pending when the hook is reset or disposed resolves into nothing (its
+result is discarded), so a detached or reset NPC can never be moved by a
+stale step; a rejected step propagates to the player, which disables the
+NPC and reports it.

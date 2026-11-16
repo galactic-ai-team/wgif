@@ -12,6 +12,15 @@ export interface CourtAi {
   dispose(): void;
 }
 
+export interface CourtAiOptions {
+  /**
+   * Called once when the NPC fails mid-game (a model step rejects). The NPC
+   * is already disabled by then; the player uses this to report it (the #ai
+   * line) instead of leaving a stale "rules model" status on screen.
+   */
+  onError?: (error: unknown) => void;
+}
+
 const HOME: Vec3 = [0, 0, 6];
 const MARKER_RADIUS = 0.35;
 const MARKER_COLOR = 0x8b5cf6; // violet — the rebounder is Nova's NPC
@@ -26,11 +35,27 @@ const BALL_CARRY_HEIGHT = 0.9;
  * a pass. Returns null when the world has no rebounder model or no ball node —
  * the world is still fully explorable without it.
  *
+ * Lifecycle: movement velocity is persistent (the last action's velocity is
+ * integrated every frame), but the pass/hold gameplay events are one-shot —
+ * they are applied only when the hook reports a fresh model step
+ * (`TickResult.stepped`), never from a repeated stale action. If a model
+ * step rejects mid-game, the NPC is disabled (marker removed, hook disposed)
+ * and `onError` is called once; there is no second runtime fallback — the
+ * rules twin already *is* the fallback, so a running model failing means the
+ * NPC stops rather than the world breaking. A step that resolves after the
+ * NPC is disposed is ignored (the hook discards it, and the player checks
+ * `disposed` before applying anything).
+ *
  * The hook is rules-first by manifest order, with the JS MLP evaluator as the
  * optional ONNX optimization and the rules twin as fallback (no WASM). The
  * viewer hook it runs on (WorldViewer.onTick) belongs to the player lane.
  */
-export async function attachCourtAi(world: WgifWorld, viewer: WorldViewer, hints: CameraHints): Promise<CourtAi | null> {
+export async function attachCourtAi(
+  world: WgifWorld,
+  viewer: WorldViewer,
+  hints: CameraHints,
+  opts: CourtAiOptions = {},
+): Promise<CourtAi | null> {
   const ballNode = viewer.scene.getObjectByName('ball');
   if (!ballNode) return null;
   let hook;
@@ -57,10 +82,34 @@ export async function attachCourtAi(world: WgifWorld, viewer: WorldViewer, hints
   let lastAction: NpcAction = { state: 'idle', velocity: [0, 0, 0], passBall: false, holdingBall: false, target: ballPos };
   let timeSec = 0;
   let disposed = false;
+  let failed = false;
 
   const playerFeet = (): Vec3 => [viewer.camera.position.x, 0, viewer.camera.position.z];
 
+  const dispose = (): void => {
+    if (disposed) return;
+    disposed = true;
+    hook.dispose();
+    if (viewer.onTick === onTick) viewer.onTick = undefined;
+    viewer.scene.remove(marker);
+    marker.geometry.dispose();
+    (marker.material as THREE.Material).dispose();
+  };
+
+  /** Disables the NPC after a mid-game model failure and reports it once. */
+  const fail = (error: unknown): void => {
+    if (failed || disposed) return;
+    failed = true;
+    dispose();
+    opts.onError?.(error);
+  };
+
+  // One-shot gameplay events: applied only from a fresh model step. The
+  // hook's TickResult.stepped is the only thing that says an action is new —
+  // a repeated stale action (no step ran this frame) must never re-fire a
+  // pass. Ignored entirely once the NPC is disposed or failed.
   const applyAction = (action: NpcAction): void => {
+    if (disposed || failed) return;
     lastAction = action;
     if (action.passBall) {
       heldBy = 'player';
@@ -72,12 +121,13 @@ export async function attachCourtAi(world: WgifWorld, viewer: WorldViewer, hints
   };
 
   const onTick = (dt: number): void => {
-    if (disposed) return;
+    if (disposed || failed) return;
     timeSec += dt;
     // The hook steps the model at its descriptor tickHz (at most 3 steps per
-    // call) and returns the current action; the ball/hold effects apply when
-    // the step resolves. Integration below uses the latest action, so the
-    // marker moves smoothly between model ticks.
+    // call) and reports whether a step was committed. Velocity is persistent
+    // (integrated below from the last action), but the pass/hold events are
+    // applied only on a fresh step. A rejection disables the NPC via fail()
+    // instead of leaving an unhandled promise rejection.
     void hook
       .tick(dt, {
         timeSec,
@@ -85,7 +135,12 @@ export async function attachCourtAi(world: WgifWorld, viewer: WorldViewer, hints
         player: { position: playerFeet() },
         self: { position: selfPos },
       })
-      .then(applyAction);
+      .then((result) => {
+        if (result.stepped) applyAction(result.action);
+      })
+      .catch(fail);
+    // Integrate the last action's velocity between model ticks so the marker
+    // moves smoothly; the velocity is the persistent part of the action.
     selfPos = [
       clamp(selfPos[0] + lastAction.velocity[0] * dt, bounds.min[0], bounds.max[0]),
       0,
@@ -100,12 +155,6 @@ export async function attachCourtAi(world: WgifWorld, viewer: WorldViewer, hints
   return {
     runtime,
     usedFallback,
-    dispose(): void {
-      disposed = true;
-      if (viewer.onTick === onTick) viewer.onTick = undefined;
-      viewer.scene.remove(marker);
-      marker.geometry.dispose();
-      (marker.material as THREE.Material).dispose();
-    },
+    dispose,
   };
 }

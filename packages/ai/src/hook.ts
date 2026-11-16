@@ -17,7 +17,23 @@ import { loadModelFromWorld } from './loader.js';
  * that in `usedFallback`. The hook never claims general `runtime.onnx`
  * support — the JS MLP is an optional optimization for small MLPs, not a
  * general ONNX runtime (see docs/CAPABILITIES.md).
+ *
+ * Lifecycle: movement velocity is persistent (the player integrates the last
+ * action's velocity every frame), but gameplay events are one-shot — they
+ * are fresh only on a tick where the model actually stepped, which is what
+ * `TickResult.stepped` / `step` say. A model update that is still pending
+ * when the hook is reset or disposed resolves into nothing: its result is
+ * discarded, so a detached or reset NPC can never be moved by a stale step.
  */
+export interface TickResult {
+  /** The action to integrate this frame. Velocity is persistent: it stays the last model output between steps. */
+  action: NpcAction;
+  /** True only when the model stepped during this tick() call. One-shot gameplay events (passBall) are fresh only then — a stale action must never be re-applied as a new event. */
+  stepped: boolean;
+  /** Monotonically increasing count of committed model steps (restarts at 0 after reset). */
+  step: number;
+}
+
 export interface NpcHook {
   /** The runtime actually driving the NPC ('rules' or 'onnx'). */
   readonly runtime: 'rules' | 'onnx';
@@ -29,19 +45,25 @@ export interface NpcHook {
   readonly warnings: readonly string[];
   /** The model's display-only state (e.g. 'chase', 'carry'). */
   readonly state: string;
-  /** The most recent model action, or null before the first model step. */
+  /** The most recent model action, or null before the first committed step. */
   readonly lastAction: NpcAction | null;
+  /** Count of committed model steps (restarts at 0 after reset). */
+  readonly step: number;
   /**
    * Advances the NPC by `dt` frame seconds with the current observation.
    * Steps the model at most `MAX_STEPS_PER_TICK` times per call (3), so a
    * long frame can never spiral into catch-up steps. Returns the current
-   * action — the latest model output, or a zero-velocity idle action before
-   * the first step — so the player always has a velocity to integrate.
-   * Steps within one call share the frame's observation.
+   * action plus whether a step was committed (`stepped`) and the step
+   * sequence number (`step`), so the caller can tell a fresh gameplay event
+   * from a repeated stale action. Steps within one call share the frame's
+   * observation. A rejected model step propagates to the caller (the hook
+   * stays usable; the caller decides whether to disable the NPC).
    */
-  tick(dt: number, obs: NpcObservation): Promise<NpcAction>;
-  /** Clears the accumulator and the last action, and resets the model. */
+  tick(dt: number, obs: NpcObservation): Promise<TickResult>;
+  /** Clears the accumulator and the last action, restarts the step sequence, and resets the model. A model step pending at reset time resolves into nothing. */
   reset(): void;
+  /** Invalidates pending model steps and stops the hook stepping. tick() after dispose returns the last action with stepped: false and never steps the model again. */
+  dispose(): void;
 }
 
 /** Maximum model steps per tick() call — bounds catch-up after a long frame. */
@@ -68,6 +90,21 @@ export function createNpcHookFromModel(model: NpcModel, tickHz: number, meta?: P
   let acc = 0;
   let inFlight = false;
   let lastAction: NpcAction | null = null;
+  let stepCount = 0;
+  // Generation: bumped by reset()/dispose(). A model step captures the
+  // generation before it awaits, and only commits its result if the
+  // generation is unchanged — so a step that resolves after a reset or a
+  // dispose can never move a detached or reset NPC.
+  let generation = 0;
+  let disposedFlag = false;
+
+  const idleAction = (obs: NpcObservation): NpcAction => ({
+    state: model.state,
+    velocity: [0, 0, 0],
+    passBall: false,
+    holdingBall: false,
+    target: obs.ball.position,
+  });
 
   return {
     runtime,
@@ -80,21 +117,38 @@ export function createNpcHookFromModel(model: NpcModel, tickHz: number, meta?: P
     get lastAction(): NpcAction | null {
       return lastAction;
     },
-    async tick(dt: number, obs: NpcObservation): Promise<NpcAction> {
+    get step(): number {
+      return stepCount;
+    },
+    async tick(dt: number, obs: NpcObservation): Promise<TickResult> {
       if (!Number.isFinite(dt) || dt < 0) {
         throw new Error(`tick dt must be a finite number >= 0, got ${dt}`);
       }
+      // A disposed hook never steps again; it keeps reporting the last action.
+      if (disposedFlag) {
+        return { action: lastAction ?? idleAction(obs), stepped: false, step: stepCount };
+      }
       acc += dt;
       let steps = 0;
+      let committed = 0;
       while (acc >= tickDt && steps < MAX_STEPS_PER_TICK) {
         // A model step is already running: keep the last action and let the
         // pending step run on the next call instead of overlapping updates.
         if (inFlight) break;
+        if (disposedFlag) break;
         acc -= tickDt;
         steps++;
+        const gen = generation;
         inFlight = true;
         try {
-          lastAction = await model.update(obs, tickDt);
+          const action = await model.update(obs, tickDt);
+          // The hook was reset or disposed while this step was pending: the
+          // result is stale, so it is discarded, not committed.
+          if (gen === generation) {
+            lastAction = action;
+            stepCount++;
+            committed++;
+          }
         } finally {
           inFlight = false;
         }
@@ -102,20 +156,18 @@ export function createNpcHookFromModel(model: NpcModel, tickHz: number, meta?: P
       // The per-call step cap was hit: drop the leftover time instead of
       // carrying it into the next call, so a long frame cannot spiral.
       if (steps >= MAX_STEPS_PER_TICK && acc >= tickDt) acc = 0;
-      return (
-        lastAction ?? {
-          state: model.state,
-          velocity: [0, 0, 0],
-          passBall: false,
-          holdingBall: false,
-          target: obs.ball.position,
-        }
-      );
+      return { action: lastAction ?? idleAction(obs), stepped: committed > 0, step: stepCount };
     },
     reset(): void {
+      generation++;
       acc = 0;
       lastAction = null;
+      stepCount = 0;
       model.reset();
+    },
+    dispose(): void {
+      generation++;
+      disposedFlag = true;
     },
   };
 }
