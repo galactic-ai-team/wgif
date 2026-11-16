@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
-const COMMITTED_COURT_SHA256 = '31559eb9b4d10b3b4b5ba7dbc7f5b1746587e3ea8400b2704bfc84dd09f39dd2';
+const COMMITTED_COURT_SHA256 = 'a8faa9aa8cdc3cb293d31f12f0095e529f4997ebd61747a53cfa4d91cba39300';
 const DRAFT = '0.1.0-draft.0';
 const PACKAGES = ['format', 'ai'] as const;
 

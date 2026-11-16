@@ -171,6 +171,44 @@ describe('rules rebounder behaviour', () => {
     expect(npc.state).toBe('idle');
   });
 
+  it('does not pick up a ball that is near but out of bounds', async () => {
+    const npc = loadRulesModel(rulesDescriptor, rulesBytes);
+    // Ball 0.3 m past the +x wall, NPC at the wall beside it: the ball is
+    // inside pickup range (0.45 m) AND out of bounds. The chase state checks
+    // ball_out_of_bounds before ball_near, so the NPC gives up instead of
+    // picking up a ball it cannot legally reach.
+    const out = obs({
+      ball: { position: [17.3, 0.12, 0.5], velocity: [0, 0, 0] },
+      self: { position: [17, 0, 0.5] },
+    });
+    const first = await npc.update(out, 0.1);
+    expect(first.state).toBe('chase');
+    const giveUp = await npc.update(out, 0.1);
+    expect(giveUp.state).toBe('idle');
+    expect(giveUp.holdingBall).toBe(false);
+    expect(giveUp.passBall).toBe(false);
+    // It walks home, not toward the out-of-bounds ball.
+    expect(giveUp.velocity[0]).toBeLessThan(0);
+    // Over more ticks it never picks the ball up.
+    for (let tick = 0; tick < 8; tick++) {
+      const action = await npc.update(out, 0.1);
+      expect(action.state).not.toBe('pickup');
+      expect(action.state).not.toBe('carry');
+      expect(action.holdingBall).toBe(false);
+    }
+
+    // Control: the same geometry with the ball inside the court is picked up.
+    const npc2 = loadRulesModel(rulesDescriptor, rulesBytes);
+    const inBounds = obs({
+      ball: { position: [16.7, 0.12, 0.5], velocity: [0, 0, 0] },
+      self: { position: [17, 0, 0.5] },
+    });
+    await npc2.update(inBounds, 0.1);
+    const pickup = await npc2.update(inBounds, 0.1);
+    expect(pickup.state).toBe('pickup');
+    expect(pickup.holdingBall).toBe(true);
+  });
+
   it('chases at chase speed and carries at carry speed', async () => {
     const npc = loadRulesModel(rulesDescriptor, rulesBytes);
     const chase = await npc.update(obs(), 0.1);

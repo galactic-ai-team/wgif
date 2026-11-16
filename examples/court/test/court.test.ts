@@ -45,6 +45,10 @@ describe('example court', () => {
     const parsed = parseRulesModel(world.files['models/rebounder.rules.json']!);
     expect(rules.tickHz).toBe(parsed.tickHz);
     expect(rules.seed).toBe(parsed.seed);
+    // The packed rules file carries the fix: in the chase state, an
+    // out-of-bounds ball is given up on before a near ball is picked up.
+    const chaseOn = parsed.states.chase!.on.map((t) => t.when);
+    expect(chaseOn.indexOf('ball_out_of_bounds')).toBeLessThan(chaseOn.indexOf('ball_near'));
     expect(world.files['models/rebounder-mlp.onnx']!.byteLength).toBeLessThanOrEqual(51200);
   });
 
