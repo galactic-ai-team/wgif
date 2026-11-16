@@ -546,13 +546,17 @@ export function renderMarkdown(report: SizeReport, budgets: Budgets, violations:
   if (report.worlds.length === 0) {
     L.push('_No .wgif files found._')
   } else {
-    L.push('| World | In container | Budget | Status | Expanded | Transfer (brotli) |')
+    L.push(
+      '| World | In container | Budget | Status | Expanded / uncompressed budget | Transfer (brotli) |',
+    )
     L.push('|---|---:|---:|---:|---:|---:|')
     for (const w of report.worlds) {
       const expanded = w.entries.reduce((a, e) => a + e.expandedBytes, 0)
       L.push(
         `| \`${w.path}\` | ${formatBytes(w.totalBytes)} | ${formatBytes(budgets.worldTotalBytes)} | ` +
-          `${status(w.totalBytes, budgets.worldTotalBytes)} | ${formatBytes(expanded)} | ${formatBytes(w.transferBytes)} |`,
+          `${status(w.totalBytes, budgets.worldTotalBytes)} | ` +
+          `${formatBytes(expanded)} / ${formatBytes(budgets.worldMaxUncompressedBytes)} ` +
+          `${status(expanded, budgets.worldMaxUncompressedBytes)} | ${formatBytes(w.transferBytes)} |`,
       )
     }
     L.push('')
