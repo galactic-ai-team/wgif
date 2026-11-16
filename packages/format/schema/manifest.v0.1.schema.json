@@ -73,6 +73,7 @@
           "properties": { "id": { "type": "string" }, "signingHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" } }
         },
         "generator": { "type": "string", "maxLength": 200 },
+        "params": { "type": "object", "additionalProperties": true },
         "history": {
           "type": "array", "items": {
             "type": "object", "required": ["action", "at"], "additionalProperties": false,
