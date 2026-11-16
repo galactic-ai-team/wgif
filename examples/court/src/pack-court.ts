@@ -1,5 +1,5 @@
 import { writeFileSync, mkdirSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { buildCourtGlb, generateOrbitPreviewGif } from './court-builder.js';
 
