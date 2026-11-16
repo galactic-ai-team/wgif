@@ -42,9 +42,10 @@ summary for authors and players.
 - **Determinism:** rules models must declare `deterministic: true` plus a
   `seed` (the rebounder uses seed 7). The rules parser is fail-closed
   (unknown conditions, behaviours, targets or non-deterministic
-  declarations are rejected at load, never at play time), and an ONNX
-  model's input/output shapes and dtypes are checked against the live
-  session with a probe inference at load.
+  declarations are rejected at load, never at play time), and the specialized
+  JS MLP evaluator validates its supported descriptor signature and
+  expected ONNX weight names, shapes and dtypes before inference. It does
+  not create a general ONNX runtime session.
 - **No executable code:** model files are data. `§5.6` forbids executable
   payloads in containers, and the validator rejects bad descriptors and
   fallbacks with the `models.*` error codes (`duplicate`, `oversize`,
