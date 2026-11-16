@@ -4,11 +4,11 @@
 body { margin: 0; height: 100vh; height: 100dvh; display: flex; flex-direction: column; overscroll-behavior: none; }
 header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; padding: 8px 12px; padding-top: max(8px, env(safe-area-inset-top)); background: #141833; }
 .actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.btn { cursor: pointer; border: 1px solid #3a4280; background: #1e2550; color: inherit; padding: 6px 10px; border-radius: 6px; font: inherit; font-size: 14px; }
+.btn { touch-action: manipulation; cursor: pointer; border: 1px solid #3a4280; background: #1e2550; color: inherit; padding: 6px 10px; border-radius: 6px; font: inherit; font-size: 14px; }
 .btn:disabled { opacity: 0.5; cursor: default; }
 .btn.primary { background: #c2571a; border-color: #ef8a4a; }
 .btn[aria-pressed='true'] { background: #3b46a0; border-color: #8ea0ff; }
-.btn:focus-visible, .touch-btn:focus-visible { outline: 2px solid #8ea0ff; outline-offset: 2px; }
+.btn:focus-visible, .touch-btn:focus-visible, input:focus-visible { outline: 2px solid #8ea0ff; outline-offset: 2px; }
 .muted { color: #9aa0c8; }
 .small { font-size: 13px; }
 main { flex: 1; display: flex; min-height: 0; }
@@ -44,13 +44,21 @@ main { flex: 1; display: flex; min-height: 0; }
 .touch-btn:active { background: rgba(239, 138, 74, 0.9); }
 .touch-btn.small { width: 48px; height: 48px; right: max(118px, calc(env(safe-area-inset-right) + 100px)); border-color: #8ea0ff; background: rgba(30, 37, 80, 0.8); font-size: 20px; }
 
+#editor { top: 10px; left: 10px; display: flex; flex-direction: column; gap: 6px; max-width: 230px; }
+#editor p { margin: 0; font-size: 12px; }
+#editor .row { display: flex; gap: 6px; }
+#ed-rules { display: flex; gap: 8px; }
+#ed-rules label { font-size: 12px; display: flex; flex-direction: column; gap: 2px; }
+input[type='number'], input[type='text'] { width: 100%; padding: 5px 6px; border-radius: 6px; border: 1px solid #3a4280; background: #0b0d17; color: inherit; font: inherit; font-size: 14px; }
 #perf { position: absolute; right: 8px; top: 8px; margin: 0; padding: 6px 8px; background: rgba(0, 0, 0, 0.65); border-radius: 6px; font: 11px/1.35 ui-monospace, monospace; pointer-events: none; }
 
 aside { width: 300px; overflow: auto; padding: 12px; background: #11142a; border-left: 1px solid #232a55; }
 aside img { width: 100%; border-radius: 6px; image-rendering: auto; }
 aside h2 { margin: 8px 0 2px; font-size: 18px; }
 aside h3 { margin: 14px 0 4px; font-size: 14px; text-transform: uppercase; letter-spacing: 0.06em; color: #9aa0c8; }
+aside section .btn { margin: 4px 4px 0 0; }
 aside ul { padding-left: 18px; margin: 4px 0; }
+.field { display: block; font-size: 13px; margin-bottom: 4px; }
 .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; background: #2b3270; }
 .badge.locked { background: #7a2b2b; } .badge.editable { background: #23633a; } .badge.layered { background: #5c4a14; }
 .badge.valid { background: #23633a; } .badge.invalid { background: #7a2b2b; }
@@ -58,5 +66,17 @@ aside ul { padding-left: 18px; margin: 4px 0; }
 .mono { font-family: ui-monospace, monospace; font-size: 12px; padding-left: 16px; }
 #toast { position: fixed; right: 12px; bottom: 12px; max-width: min(420px, calc(100vw - 24px)); background: #7a2b2b; padding: 10px 14px; border-radius: 8px; white-space: pre-wrap; z-index: 10; }
 #toast.ok { background: #23633a; }
-@media (max-width: 720px) { main { flex-direction: column; } aside { width: auto; max-height: 34vh; border-left: 0; border-top: 1px solid #232a55; } .brand .muted { display: none; } }
+@media (max-width: 720px) {
+  main { flex-direction: column; }
+  aside { width: auto; max-height: 34vh; border-left: 0; border-top: 1px solid #232a55; }
+  /* One compact header row: the logo, then the buttons, scrolling sideways if they do not fit. */
+  header { flex-wrap: nowrap; padding: 6px 8px; padding-top: max(6px, env(safe-area-inset-top)); }
+  .brand strong, .brand .muted { display: none; }
+  .actions { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .actions .btn { flex: none; padding: 6px 9px; font-size: 13px; }
+  /* Playing: the 3D view gets the whole screen. The sidebar comes back in orbit view and while editing. */
+  body.playing aside { display: none; }
+  #prompt { white-space: normal; max-width: calc(100% - 40px); text-align: center; }
+}
+body.touch .hint { top: 62px; bottom: auto; left: 50%; transform: translateX(-50%); width: max-content; max-width: calc(100% - 24px); text-align: center; }
 @media (max-height: 480px) and (orientation: landscape) { aside { display: none; } header { padding: 4px 8px; } .btn { padding: 4px 8px; font-size: 13px; } }

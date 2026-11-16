@@ -190,3 +190,137 @@ export function applyEdits(interactions: Json | null, ops: EditOp[], label = 'ed
   const ids = new Set<string>([...(out ? objectsOf(out).map((o) => String(o.id)) : []), ...added]);
   return { interactions: out, sceneOps, spawn, ids, warnings };
 }
+
+/** The layer-shaped part of an edit session, ready to be written as `layers/<id>.json`. */
+export function toLayer(ops: EditOp[]): LayerFile {
+  const layer: LayerFile = { version: PAYLOAD_VERSION, add: [], move: [], remove: [] };
+  for (const op of compactOps(ops)) {
+    if (op.op === 'add') layer.add.push({ id: op.id, primitive: op.primitive, position: op.position, ...(op.size ? { size: op.size } : {}), ...(op.color ? { color: op.color } : {}) });
+    else if (op.op === 'move') layer.move.push({ id: op.id, position: op.position, ...(op.rotation ? { rotation: op.rotation } : {}), ...(op.scale ? { scale: op.scale } : {}) });
+    else if (op.op === 'remove') layer.remove.push(op.id);
+  }
+  return layer;
+}
+
+/** True for edits a layer can carry. The others (`spawn`, `rules`) need an editable world. */
+export const isLayerOp = (op: EditOp): boolean => op.op === 'add' || op.op === 'move' || op.op === 'remove';
+
+function opKey(op: EditOp): string {
+  return op.op === 'spawn' ? 'spawn' : op.op === 'rules' ? `rules:${op.minigame}` : `${op.op}:${op.id}`;
+}
+
+/**
+ * Tidies an edit session: a later edit of the same thing replaces the earlier one, rule changes
+ * for one minigame merge, moving a primitive added in the same session just changes where it is
+ * added, and removing one cancels the add.
+ */
+export function compactOps(ops: EditOp[]): EditOp[] {
+  const out = new Map<string, EditOp>();
+  for (const op of ops) {
+    if (op.op === 'move') {
+      const added = out.get(`add:${op.id}`);
+      if (added?.op === 'add') {
+        out.set(`add:${op.id}`, { ...added, position: op.position });
+        continue;
+      }
+    }
+    if (op.op === 'remove' && out.has(`add:${op.id}`)) {
+      out.delete(`add:${op.id}`);
+      out.delete(`move:${op.id}`);
+      continue;
+    }
+    const key = opKey(op), earlier = out.get(key);
+    out.delete(key);
+    out.set(key, op.op === 'rules' && earlier?.op === 'rules' ? { ...op, rules: { ...earlier.rules, ...op.rules } } : op);
+  }
+  return [...out.values()];
+}
+
+/**
+ * Validates one edit read back from storage. Returns null for anything malformed. Edits come from
+ * this player, but storage is shared with every script on the origin, so they are checked anyway.
+ */
+export function sanitizeOp(raw: unknown): EditOp | null {
+  if (!isJson(raw)) return null;
+  if (raw.op === 'add') {
+    const add = parseAdd(raw);
+    return add ? { op: 'add', ...add } : null;
+  }
+  if (raw.op === 'move') {
+    const move = parseMove(raw);
+    return move ? { op: 'move', ...move } : null;
+  }
+  if (raw.op === 'remove') return isId(raw.id) ? { op: 'remove', id: raw.id } : null;
+  if (raw.op === 'spawn') {
+    const position = point(raw.position), lookAt = point(raw.lookAt);
+    return position ? { op: 'spawn', position, ...(lookAt ? { lookAt } : {}) } : null;
+  }
+  if (raw.op === 'rules' && isId(raw.minigame) && isJson(raw.rules)) {
+    const clean = sanitizeRules(raw.rules);
+    const rules: Partial<ShootingRules> = {};
+    if ('durationSec' in raw.rules) rules.durationSec = clean.durationSec;
+    if ('pointsPerBasket' in raw.rules) rules.pointsPerBasket = clean.pointsPerBasket;
+    if ('threePointRadius' in raw.rules) rules.threePointRadius = clean.threePointRadius;
+    return Object.keys(rules).length > 0 ? { op: 'rules', minigame: raw.minigame, rules } : null;
+  }
+  return null;
+}
+
+/** One line of plain language per edit, for the edit panel and the provenance note. */
+export function describeOp(op: EditOp): string {
+  const at = (p: Vec3): string => p.map((n) => n.toFixed(1)).join(', ');
+  if (op.op === 'add') return `added ${op.primitive} "${op.id}" at ${at(op.position)}`;
+  if (op.op === 'move') return `moved "${op.id}" to ${at(op.position)}`;
+  if (op.op === 'remove') return `removed "${op.id}"`;
+  if (op.op === 'spawn') return `visitors start at ${at(op.position)}`;
+  return `${op.minigame} rules: ${Object.entries(op.rules).map(([k, v]) => `${k} ${v}`).join(', ')}`;
+}
+
+/** The unsaved edits of one editing session, with undo. */
+export class EditSession {
+  private list: EditOp[] = [];
+  private undoStack: EditOp[][] = [];
+
+  /** The session's edits, tidied (see compactOps). */
+  get ops(): EditOp[] {
+    return compactOps(this.list);
+  }
+
+  get dirty(): boolean {
+    return this.ops.length > 0;
+  }
+
+  get canUndo(): boolean {
+    return this.undoStack.length > 0;
+  }
+
+  push(op: EditOp): void {
+    this.undoStack.push(this.list);
+    this.list = [...this.list, op];
+  }
+
+  /** Starts from a saved draft. Undo can take it back one edit at a time. */
+  restore(ops: EditOp[]): void {
+    this.clear();
+    for (const op of ops) this.push(op);
+  }
+
+  /** Takes back the latest edit. */
+  undo(): void {
+    this.list = this.undoStack.pop() ?? [];
+  }
+
+  clear(): void {
+    this.list = [];
+    this.undoStack = [];
+  }
+
+  /** A free id for a new primitive: `block-1`, `block-2`, … skipping ids already in use. */
+  nextId(taken: ReadonlySet<string>, stem = 'block'): string {
+    const mine = new Set(this.list.filter((o) => o.op === 'add').map((o) => (o as LayerAdd).id));
+    for (let n = 1; ; n++) {
+      const id = `${stem}-${n}`;
+      if (!taken.has(id) && !mine.has(id)) return id;
+    }
+  }
+}

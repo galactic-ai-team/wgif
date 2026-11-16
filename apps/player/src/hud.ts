@@ -27,7 +27,8 @@ export class Hud {
   frame(rt: WorldRuntime | null, mode: ControlMode, opts: { touch: boolean; editing: boolean }): void {
     const game = rt?.shootout ?? null;
     const walking = !!rt && mode === 'walk';
-    this.show(this.scoreboard, !!game);
+    // While editing on a phone the edit panel needs the top of the screen; the clock is not running anyway.
+    this.show(this.scoreboard, !!game && !opts.editing);
     if (game) {
       const seconds = game.phase === 'idle' || game.phase === 'countdown' ? game.rules.durationSec : Math.ceil(game.timeLeft);
       this.text(this.time, String(seconds));

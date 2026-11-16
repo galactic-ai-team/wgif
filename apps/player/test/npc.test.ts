@@ -146,6 +146,20 @@ describe('rebounder NPC (the court model through @wgif/ai)', () => {
     expect(seconds).toBeLessThan(5);
   });
 
+  it('asks the model at its own rate, not on every simulation tick', async () => {
+    const { runtime, npc } = await courtWithNpc();
+    const hook = (npc as unknown as { hook: { tick: (...a: unknown[]) => unknown } }).hook;
+    const original = hook.tick.bind(hook);
+    let calls = 0;
+    hook.tick = (...args: unknown[]) => {
+      calls++;
+      return original(...args);
+    };
+    for (let i = 0; i < 60; i++) await frame(runtime, npc); // one simulated second
+    expect(calls).toBeGreaterThanOrEqual(9);
+    expect(calls).toBeLessThanOrEqual(11);
+  });
+
   it('plays the same rebound the same way every time', async () => {
     const play = async () => {
       const { runtime, npc } = await courtWithNpc();
