@@ -14,6 +14,16 @@ let viewer: WorldViewer | null = null;
 let courtAi: CourtAi | null = null;
 let previewUrl: string | null = null;
 
+// Offline PWA (Phase One item 6): register the hand-written service worker
+// in production builds only, so `vite dev` never caches dev assets. The
+// worker precaches the app shell + the sample court, cache-first, under a
+// versioned cache name; a failed registration never breaks the player.
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch((error: unknown) => {
+    console.warn('WGIF Player: service worker registration failed, continuing online-only', error);
+  });
+}
+
 function showError(message: string, details: string[] = []): void {
   toast.textContent = [message, ...details.slice(0, 8)].join('\n');
   toast.hidden = false;

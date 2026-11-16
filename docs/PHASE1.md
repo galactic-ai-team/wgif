@@ -12,7 +12,7 @@ Legend: `[x]` done on `main` · `[~]` proof only / partial · `[ ]` open. Owner 
 - [x] **3. Opens through the WGIF Player.** `apps/player` opens a file via the file picker or drag-and-drop, validates it, and shows errors. [Claude]
 - [~] **4. Basic camera movement and exploration.** Orbit (mouse/touch) and first-person walk (pointer-lock + WASD, desktop only). Touch walk controls and collisions are open. [Claude]
 - [ ] **5. A working basketball shooting minigame.** Interaction data is declared in `interactions.json`, but the player doesn't run it yet. [Claude, with Nova for the rebounder NPC]
-- [ ] **6. Runs fully offline once the player is installed.** The player makes no network calls for worlds, but there's no PWA/service worker yet. [Claude, Dee]
+- [~] **6. Runs fully offline once the player is installed.** Hand-written service worker + web manifest (Nova, reassigned from Claude by Lumi): app shell + sample court precached cache-first under a versioned cache name, verified offline reload in Chromium with zero network requests; real-device check (phone + desktop, network off) still open. [Nova, Dee]
 - [~] **7. Supports editable and locked creator modes.** The format layer is done: modes, ed25519 signing/verification, and `exportEditedWorld()` refusing locked worlds, all tested. The player UI for it is open. [GPT-6, Claude]
 - [~] **8. Saves modifications and exports a new `.wgif`.** The library export with history and provenance is done and tested. Player save/export UI and local state saving are open. [Claude, GPT-6]
 - [ ] **9. Can be moved to another device and opened.** To verify on a real second device (phone + desktop) once 6 and 8 land. [Lumi, Dee]
