@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { Vec3 } from '@wgif/format';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { parseGlb } from './glb.js';
@@ -6,6 +7,7 @@ import type { GameState } from './interactions.js';
 import { QualityGovernor } from './quality.js';
 import { createRuntime, findNodes, type SceneColliders } from './sceneBridge.js';
 import type { AgentBody } from './sim/agents.js';
+import { LAYER_SOLID, newRayHit } from './sim/colliders.js';
 import { IDLE_INPUT, type Grabbable, type PlayerInput, type RuntimeEvent, type WorldRuntime } from './sim/runtime.js';
 import { WorldOpenError, type WorldDocument } from './world.js';
 
@@ -40,10 +42,11 @@ interface Flash {
 
 const ARC_POINTS = 48;
 const FLASH_SEC = 0.8;
+const ray = newRayHit();
 
 /**
  * Renders a world and drives its simulation: orbit and first-person cameras, lighting and shadows,
- * the moving objects and the aim arc. Game rules live in `sim/`; this class only
+ * the moving objects, the aim arc and the edit markers. Game rules live in `sim/`; this class only
  * draws what the runtime says and feeds it input.
  */
 export class WorldViewer {
@@ -58,6 +61,9 @@ export class WorldViewer {
   private readonly orbit: OrbitControls;
   private readonly sun = new THREE.DirectionalLight(0xfff1dd, 1.7);
   private readonly dynamicRoot = new THREE.Group();
+  private readonly markers = new THREE.Group();
+  private readonly ballMarker: THREE.Mesh;
+  private readonly spawnMarker: THREE.Mesh;
   private readonly arc: THREE.Points;
   private readonly arcPositions = new Float32Array(ARC_POINTS * 3);
   private readonly timer = new THREE.Timer();
@@ -113,7 +119,17 @@ export class WorldViewer {
     this.arc.frustumCulled = false;
     this.arc.visible = false;
 
-    this.scene.add(this.dynamicRoot, this.arc);
+    const flat = (geometry: THREE.BufferGeometry, color: number): THREE.Mesh => {
+      const mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85, depthWrite: false, side: THREE.DoubleSide }));
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.renderOrder = 2;
+      return mesh;
+    };
+    this.ballMarker = flat(new THREE.RingGeometry(0.2, 0.28, 40), 0xffa040);
+    this.spawnMarker = flat(new THREE.CircleGeometry(0.3, 3), 0x60d0ff);
+    this.markers.add(this.ballMarker, this.spawnMarker);
+    this.markers.visible = false;
+    this.scene.add(this.dynamicRoot, this.arc, this.markers);
 
     new ResizeObserver(() => this.resize()).observe(host);
     this.applyQuality();
@@ -203,6 +219,21 @@ export class WorldViewer {
     if (mode === 'orbit') this.resetCamera();
     this.invalidate();
     this.hooks.onModeChange?.(mode);
+  }
+
+  /** Where the first-person view ray meets solid ground or a wall, and which way that surface faces. For placing things in edit mode. */
+  aimPoint(maxDistance = 40): { point: Vec3; normal: Vec3 } | null {
+    const rt = this.runtime;
+    if (!rt) return null;
+    const e = rt.player.eye, f = rt.player.forward;
+    if (!rt.colliders.raycast(e[0], e[1], e[2], f[0], f[1], f[2], maxDistance, LAYER_SOLID, ray)) return null;
+    return { point: [ray.x, ray.y, ray.z], normal: [ray.nx, ray.ny, ray.nz] };
+  }
+
+  /** Shows the spawn markers while editing. */
+  setMarkers(visible: boolean): void {
+    this.markers.visible = visible;
+    this.invalidate();
   }
 
   /** Lights up a node for a moment (a rim after a basket). */
@@ -378,6 +409,14 @@ export class WorldViewer {
       moving = true;
     }
 
+    if (this.markers.visible) {
+      const ball = rt.shootout ? rt.objects.get(rt.shootout.def.ball) : rt.objects.values().next().value;
+      this.ballMarker.visible = !!ball;
+      if (ball) this.ballMarker.position.set(ball.spawn[0], ball.spawn[1] - ball.params.radius + 0.03, ball.spawn[2]);
+      const spawn = rt.playerSpawn;
+      this.spawnMarker.position.set(spawn.position[0], spawn.position[1] - rt.player.eyeHeight + 0.04, spawn.position[2]);
+      if (spawn.lookAt) this.spawnMarker.rotation.z = Math.atan2(-(spawn.lookAt[0] - spawn.position[0]), -(spawn.lookAt[2] - spawn.position[2])) + Math.PI / 2;
+    }
     return moving || rt.charging || !!rt.shootout?.running;
   }
 

@@ -1,11 +1,16 @@
 import { createRebounder, type RebounderAgent } from './ai.js';
 import { Sfx } from './audio.js';
 import { PlayerControls } from './controls.js';
+import { EditSession, isLayerOp } from './edit.js';
+import { exportWorld, type ExportResult } from './exporter.js';
 import { Hud } from './hud.js';
+import { mergeState, sanitizeRules, type GameState } from './interactions.js';
+import { WorldSaver, draftFits, openStateStore } from './save.js';
 import { BallReturnAgent } from './sim/agents.js';
 import type { RuntimeEvent, WorldRuntime } from './sim/runtime.js';
+import type { Vec3 } from './sim/vec.js';
 import { WorldViewer, type ControlMode } from './viewer.js';
-import { WorldOpenError, describeMode, describeTrust, formatBytes, loadDocument, openWorld, type WorldDocument } from './world.js';
+import { WorldOpenError, describeMode, describeTrust, formatBytes, loadDocument, openWorld, withEdits, type WorldDocument } from './world.js';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const li = (text: string, className = ''): HTMLLIElement => Object.assign(document.createElement('li'), { textContent: text, className });
@@ -13,18 +18,23 @@ const stage = $('stage');
 const fileInput = $<HTMLInputElement>('file');
 const modeBtn = $<HTMLButtonElement>('mode');
 const playBtn = $<HTMLButtonElement>('play');
+const editBtn = $<HTMLButtonElement>('edit');
 const muteBtn = $<HTMLButtonElement>('mute');
 const hint = $('hint');
 const toast = $('toast');
+const byInput = $<HTMLInputElement>('by');
 const perfBox = new URLSearchParams(location.search).has('perf') ? $('perf') : null;
 
 /** Everything that belongs to the world that is open right now. */
 interface Session {
   doc: WorldDocument;
+  saver: WorldSaver;
+  edits: EditSession;
   npc: RebounderAgent | null;
   /** Names of thin props (rims), for the sound of a bounce. */
   props: Set<string>;
   warnings: string[];
+  lastExport: ExportResult | null;
 }
 
 // Offline PWA (Phase One item 6): register the hand-written service worker
@@ -39,8 +49,10 @@ if (import.meta.env.PROD && 'serviceWorker' in navigator) {
 
 const hud = new Hud();
 const sfx = new Sfx();
+const store = openStateStore();
 let viewer: WorldViewer | null = null;
 let session: Session | null = null;
+let editing = false;
 let previewUrl: string | null = null;
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -48,7 +60,7 @@ const controls = new PlayerControls(stage, { stick: $('stick'), knob: $('knob'),
   onPrimary: () => {
     sfx.unlock();
     const rt = viewer?.runtime;
-    if (rt && !rt.held) rt.grab();
+    if (rt && !rt.held && !editing) rt.grab();
   },
   onUse: () => {
     const rt = viewer?.runtime;
@@ -84,7 +96,10 @@ function setHint(): void {
 
 function setMode(mode: ControlMode): void {
   if (!viewer) return;
-  if (mode === 'orbit') viewer.runtime?.stopShootout();
+  if (mode === 'orbit') {
+    viewer.runtime?.stopShootout();
+    if (editing) setEditing(false);
+  }
   viewer.setMode(mode);
   controls.setEnabled(mode === 'walk');
   setHint();
@@ -93,9 +108,24 @@ function setMode(mode: ControlMode): void {
 
 function syncButtons(): void {
   const rt = viewer?.runtime ?? null;
+  const doc = session?.doc;
   modeBtn.disabled = !rt;
   playBtn.hidden = !rt?.shootout;
   playBtn.textContent = rt?.shootout?.running ? '■ Stop' : '▶ Shootout';
+  editBtn.hidden = !doc?.policy.canEdit;
+  editBtn.setAttribute('aria-pressed', String(editing));
+  $('editor').hidden = !editing;
+  if (!doc || !session) return;
+  const base = doc.policy.via === 'base';
+  $('ed-block').hidden = doc.policy.via !== 'layer';
+  $('ed-spawn').hidden = !base;
+  $('ed-rules').hidden = !base || !rt?.shootout;
+  $('ed-ball').hidden = !rt || rt.objects.size === 0;
+  const count = session.edits.ops.length;
+  $('ed-count').textContent = count ? `${count} unsaved` : '';
+  $<HTMLButtonElement>('ed-undo').disabled = !session.edits.canUndo;
+  $<HTMLButtonElement>('ed-discard').disabled = !session.edits.dirty;
+  $<HTMLButtonElement>('export').disabled = doc.policy.via === 'layer' && count === 0;
 }
 
 function renderInfo(): void {
@@ -115,6 +145,14 @@ function renderInfo(): void {
   sig.className = `badge ${trust.tone === 'absent' ? '' : trust.tone}`;
   $('trust').textContent = trust.detail;
   $('mode-note').textContent = describeMode(doc);
+
+  $('export-box').hidden = !doc.policy.canEdit;
+  $('save-note').textContent = !doc.policy.canEdit
+    ? 'High scores and where the ball lies are saved on this device. A locked world cannot be exported.'
+    : doc.policy.via === 'layer'
+      ? 'Scores are saved on this device. Export adds your edits as a new layer; the original stays as it is.'
+      : 'Scores and where the ball lies are saved on this device. Export writes them, and your edits, into a new file.';
+  $<HTMLButtonElement>('reopen').hidden = !session.lastExport;
 
   $('layers-box').hidden = doc.layers.length === 0;
   $('layers').replaceChildren(
@@ -154,32 +192,52 @@ function renderGame(): void {
     : '';
 }
 
-/** Loads a document into the viewer and attaches the NPC. */
-async function mount(view: WorldDocument): Promise<void> {
+/** Loads a document into the viewer, attaches the NPC and (optionally) puts the player back where they stood. */
+async function mount(view: WorldDocument, state: GameState, keepPose = false): Promise<void> {
   if (!viewer || !session) return;
-  const { runtime, built } = await viewer.load(view, view.initialState);
+  const old = viewer.runtime?.player;
+  const pose = keepPose && old ? { feet: [...old.feet] as Vec3, yaw: old.yaw, pitch: old.pitch } : null;
+  const { runtime, built } = await viewer.load(view, state);
   if (session.npc) {
     runtime.setAgent(session.npc);
     // The built-in ball return stays on as a safety net for balls the NPC cannot get to.
     if (runtime.shootout) runtime.setAgent(new BallReturnAgent(7));
   }
+  if (pose) {
+    runtime.player.feet[0] = pose.feet[0]; runtime.player.feet[1] = pose.feet[1]; runtime.player.feet[2] = pose.feet[2];
+    runtime.player.yaw = pose.yaw;
+    runtime.player.pitch = pose.pitch;
+  }
+  runtime.agentsEnabled = !editing;
   session.props = new Set(built.props);
   session.warnings = [...view.warnings, ...built.warnings, ...(session.npc?.info.warnings ?? [])];
+  const rules = runtime.shootout?.rules;
+  if (rules) {
+    $<HTMLInputElement>('ed-duration').value = String(rules.durationSec);
+    $<HTMLInputElement>('ed-points').value = String(rules.pointsPerBasket);
+  }
 }
 
 async function openBytes(bytes: Uint8Array, name: string): Promise<void> {
   try {
     const world = await openWorld(bytes);
     const doc = await loadDocument(world);
+    await session?.saver.flush();
+    const saver = new WorldSaver(await store, doc.saveKey, { worldId: world.manifest.id, signingHash: doc.signingHash, title: world.manifest.title });
+    const saved = await saver.load();
     try {
       viewer ??= new WorldViewer(stage, controls);
     } catch {
       throw new WorldOpenError('This browser could not start WebGL, which the player needs to draw the world.');
     }
     viewer.hooks.onFrame = onFrame;
+    if (editing) setEditing(false);
     hud.hideResult();
-    session = { doc, npc: await createRebounder(world), props: new Set(), warnings: [] };
-    await mount(doc);
+    session = { doc, saver, edits: new EditSession(), npc: await createRebounder(world), props: new Set(), warnings: [], lastExport: null };
+    // Unsaved edits from last time come back, but only on the exact version they were made on.
+    const draft = doc.policy.canEdit && draftFits(saved?.draft, layerIds(doc)) ? saved?.draft : undefined;
+    if (draft) session.edits.restore(draft.ops);
+    await mount(draft ? withEdits(doc, session.edits.ops) : doc, mergeState(doc.initialState, saved?.state));
     $('empty').hidden = true;
     $('refused').hidden = true;
     controls.setEnabled(viewer.mode === 'walk');
@@ -187,6 +245,7 @@ async function openBytes(bytes: Uint8Array, name: string): Promise<void> {
     syncButtons();
     renderInfo();
     document.title = `${world.manifest.title} — WGIF Player`;
+    if (session.edits.dirty) notify(`Your ${session.edits.ops.length} unsaved edit${session.edits.ops.length === 1 ? ' is' : 's are'} back. Export to keep them in a file.`);
   } catch (e) {
     const err = e as WorldOpenError;
     showError(`${name}: ${err.message}`, err.details ?? []);
@@ -219,6 +278,7 @@ function startShootout(): void {
   if (!rt?.shootout) return;
   sfx.unlock();
   hud.hideResult();
+  if (editing) setEditing(false);
   setMode('walk');
   rt.startShootout();
   syncButtons();
@@ -235,8 +295,8 @@ let frames = 0;
 let lastPhase = '';
 
 function onFrame(rt: WorldRuntime, events: RuntimeEvent[], dt: number): void {
-  hud.frame(rt, viewer?.mode ?? 'orbit', { touch: controls.touch, editing: false });
-  for (const e of events) onEvent(e);
+  hud.frame(rt, viewer?.mode ?? 'orbit', { touch: controls.touch, editing });
+  for (const e of events) onEvent(rt, e);
   const phase = rt.shootout?.phase ?? '';
   if (phase !== lastPhase) {
     lastPhase = phase;
@@ -254,7 +314,7 @@ function onFrame(rt: WorldRuntime, events: RuntimeEvent[], dt: number): void {
   }
 }
 
-function onEvent(e: RuntimeEvent): void {
+function onEvent(rt: WorldRuntime, e: RuntimeEvent): void {
   if (e.type === 'bounce') sfx.bounce(e.speed, session?.props.has(e.surface) ?? false);
   else if (e.type === 'grab') sfx.grab();
   else if (e.type === 'score') {
@@ -264,6 +324,7 @@ function onEvent(e: RuntimeEvent): void {
     sfx.score();
     hud.banner(e.counted ? `+${e.points}${e.swish ? ' Swish!' : e.three ? ' From downtown!' : ''}` : e.swish ? 'Swish!' : 'Bucket!');
   } else if (e.type === 'state') {
+    session?.saver.schedule(rt.snapshot());
     renderGame();
   } else if (e.type === 'shootout') {
     const s = e.signal;
@@ -284,6 +345,158 @@ function onEvent(e: RuntimeEvent): void {
     }
   }
 }
+
+// ---- editing and export -----------------------------------------------------------------------
+
+const layerIds = (doc: WorldDocument): string[] => doc.layers.map((l) => l.id);
+/** Edits are stored to the millimetre, so exported files stay readable. */
+const mm = (v: Vec3): Vec3 => [Math.round(v[0] * 1000) / 1000, Math.round(v[1] * 1000) / 1000, Math.round(v[2] * 1000) / 1000];
+
+/** Keeps the unsaved edits on the device, next to the high score, until they are exported. */
+function saveDraft(): void {
+  const rt = viewer?.runtime;
+  if (session && rt) session.saver.setDraft(rt.snapshot(), layerIds(session.doc), session.edits.ops);
+}
+
+function setEditing(on: boolean): void {
+  const rt = viewer?.runtime;
+  if (!viewer || !rt || !session?.doc.policy.canEdit) return;
+  editing = on;
+  if (on) {
+    rt.stopShootout();
+    hud.hideResult();
+    if (viewer.mode !== 'walk') setMode('walk');
+    $('ed-note').textContent = session.doc.policy.via === 'layer' ? 'Look at a spot and choose. Your changes are saved as a layer; the original stays untouched.' : 'Look at a spot and choose. Your changes go into the copy you export.';
+  }
+  rt.agentsEnabled = !on;
+  viewer.setMarkers(on);
+  syncButtons();
+}
+
+/** Where an edit lands: the surface the player is looking at, or just ahead of their feet. */
+function editTarget(lift: number): Vec3 | null {
+  const rt = viewer?.runtime;
+  if (!viewer || !rt) return null;
+  const hit = viewer.aimPoint();
+  if (hit) return mm([hit.point[0] + hit.normal[0] * lift, hit.point[1] + hit.normal[1] * lift, hit.point[2] + hit.normal[2] * lift]);
+  const f = rt.player.forward, feet = rt.player.feet;
+  const flat = Math.hypot(f[0], f[2]) || 1;
+  return mm([feet[0] + (f[0] / flat) * 1.5, feet[1] + lift, feet[2] + (f[2] / flat) * 1.5]);
+}
+
+/** Rebuilds the scene from the document plus the unsaved edits. Needed when things are added or taken away. */
+async function rebuild(): Promise<void> {
+  const rt = viewer?.runtime;
+  if (!session || !rt) return;
+  await mount(withEdits(session.doc, session.edits.ops), rt.snapshot(), true);
+  viewer?.setMarkers(editing);
+  syncButtons();
+  renderGame();
+}
+
+$('ed-ball').addEventListener('click', () => {
+  const rt = viewer?.runtime;
+  const id = rt?.shootout?.def.ball ?? rt?.objects.keys().next().value;
+  const ball = id ? rt?.objects.get(id) : undefined;
+  const at = ball ? editTarget(ball.params.radius + 0.005) : null;
+  if (!rt || !session || !id || !at) return;
+  session.edits.push({ op: 'move', id, position: at });
+  rt.setObjectSpawn(id, at);
+  saveDraft();
+  syncButtons();
+});
+
+$('ed-block').addEventListener('click', () => {
+  const at = editTarget(0.3);
+  if (!session || !at) return;
+  session.edits.push({ op: 'add', id: session.edits.nextId(session.doc.ids), primitive: 'box', position: at, size: [0.6, 0.6, 0.6], color: '#8b5cf6' });
+  void rebuild().then(saveDraft);
+});
+
+$('ed-spawn').addEventListener('click', () => {
+  const rt = viewer?.runtime;
+  if (!rt || !session) return;
+  const e = rt.player.eye, f = rt.player.forward;
+  const eye = mm(e), lookAt = mm([e[0] + f[0] * 5, e[1] + f[1] * 5, e[2] + f[2] * 5]);
+  session.edits.push({ op: 'spawn', position: eye, lookAt });
+  rt.setPlayerSpawn(eye, lookAt);
+  saveDraft();
+  syncButtons();
+  notify('Visitors will start here, looking this way.');
+});
+
+for (const id of ['ed-duration', 'ed-points']) {
+  $(id).addEventListener('change', () => {
+    const rt = viewer?.runtime;
+    const game = rt?.shootout;
+    if (!rt || !game || !session) return;
+    const rules = sanitizeRules({ durationSec: Number($<HTMLInputElement>('ed-duration').value), pointsPerBasket: Number($<HTMLInputElement>('ed-points').value) }, game.rules);
+    // Only what actually changed, so the history note says what was edited.
+    const changed: Partial<typeof rules> = {};
+    if (rules.durationSec !== game.rules.durationSec) changed.durationSec = rules.durationSec;
+    if (rules.pointsPerBasket !== game.rules.pointsPerBasket) changed.pointsPerBasket = rules.pointsPerBasket;
+    if (Object.keys(changed).length === 0) return;
+    session.edits.push({ op: 'rules', minigame: game.id, rules: changed });
+    rt.setRules(rules);
+    saveDraft();
+    $<HTMLInputElement>('ed-duration').value = String(rules.durationSec);
+    $<HTMLInputElement>('ed-points').value = String(rules.pointsPerBasket);
+    syncButtons();
+    renderGame();
+  });
+}
+
+$('ed-undo').addEventListener('click', () => {
+  if (!session?.edits.canUndo) return;
+  session.edits.undo();
+  void rebuild().then(saveDraft);
+});
+
+$('ed-discard').addEventListener('click', () => {
+  if (!session?.edits.dirty || !confirm('Throw away all edits that have not been exported?')) return;
+  session.edits.clear();
+  void rebuild().then(saveDraft);
+});
+
+$('export').addEventListener('click', async () => {
+  const rt = viewer?.runtime;
+  if (!session || !rt) return;
+  try {
+    const by = byInput.value.trim();
+    try {
+      localStorage.setItem('wgif.author', by);
+    } catch {
+      // private mode
+    }
+    const state = session.doc.policy.via === 'base' ? rt.snapshot() : null;
+    const ops = session.doc.policy.via === 'layer' ? session.edits.ops.filter(isLayerOp) : session.edits.ops;
+    const result = await exportWorld(session.doc, { ops, state, by });
+    const url = URL.createObjectURL(new Blob([result.bytes as Uint8Array<ArrayBuffer>], { type: 'application/vnd.wgif+zip' }));
+    Object.assign(document.createElement('a'), { href: url, download: result.fileName }).click();
+    setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    session.lastExport = result;
+    $<HTMLButtonElement>('reopen').hidden = false;
+    notify(`Exported ${result.fileName} (${formatBytes(result.bytes.byteLength)}). ${result.kind === 'layer' ? 'Your changes are a new layer; the original world inside is untouched.' : 'It carries your changes and the history of this edit.'}`);
+  } catch (e) {
+    showError((e as Error).message);
+  }
+});
+
+$('reopen').addEventListener('click', () => {
+  const last = session?.lastExport;
+  if (last) void openBytes(last.bytes, last.fileName);
+});
+
+$('forget').addEventListener('click', async () => {
+  if (!session || !confirm('Erase the high score and saved ball position for this world on this device?')) return;
+  await session.saver.clear();
+  session.edits.clear();
+  viewer?.runtime?.stopShootout();
+  await mount(session.doc, session.doc.initialState);
+  syncButtons();
+  renderGame();
+  notify('Progress for this world was reset.');
+});
 
 // ---- wiring -----------------------------------------------------------------------------------
 
@@ -315,6 +528,7 @@ playBtn.addEventListener('click', () => {
 });
 $('again').addEventListener('click', startShootout);
 $('result-close').addEventListener('click', () => hud.hideResult());
+editBtn.addEventListener('click', () => setEditing(!editing));
 $('ballreset').addEventListener('click', resetBall);
 
 const paintMute = (): void => {
@@ -352,6 +566,19 @@ window.addEventListener('drop', (e) => {
   if (f) void openFile(f);
 });
 
+// Saves are written a moment after a change; make sure the last one lands before the page goes away.
+const flush = (): void => void session?.saver.flush();
+window.addEventListener('pagehide', flush);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') flush();
+});
+
+try {
+  byInput.value = localStorage.getItem('wgif.author') ?? '';
+} catch {
+  // private mode
+}
+
 // Hooks for automated smoke tests.
 Object.assign(window as unknown as Record<string, unknown>, {
   wgifOpenBytes: openBytes,
@@ -360,6 +587,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
     get runtime() { return viewer?.runtime ?? null; },
     get session() { return session; },
     setMode,
+    setEditing,
     startShootout,
   },
 });
