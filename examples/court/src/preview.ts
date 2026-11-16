@@ -1,4 +1,5 @@
-import { crc32, deflateSync } from 'node:zlib';
+import { crc32 } from 'node:zlib';
+import { zlibSync } from 'fflate';
 import { COURT, rimCenter } from './court.js';
 
 /** Minimal RGB PNG encoder (no dependencies beyond node:zlib). */
@@ -24,7 +25,7 @@ export function encodePng(width: number, height: number, rgb: Uint8Array): Uint8
   const png = Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     chunk('IHDR', ihdr),
-    chunk('IDAT', deflateSync(raw, { level: 9 })),
+    chunk('IDAT', zlibSync(raw, { level: 9 })), // pure-JS deflate: identical bytes on every machine
     chunk('IEND', new Uint8Array()),
   ]);
   return new Uint8Array(png);

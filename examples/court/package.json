@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@gltf-transform/core": "^4.5.1",
-    "@wgif/format": "*"
+    "@wgif/format": "*",
+    "fflate": "^0.8.3"
   }
 }
