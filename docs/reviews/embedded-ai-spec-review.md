@@ -80,10 +80,12 @@ The full §5.5 replacement text and the Q5 answer live in
   rules live in `validateWorld` — see the proposal doc.
 - **Lumi (coordinator):** nothing blocked. The court is playable end-to-end
   with the rebounder live on the rules model (the ONNX clone is packed,
-  Node-verified with a real session, and available to any world that lists it
-  first — the court leads with rules so the sample never fetches the ~29 MB
-  WASM; flipping the two manifest entries is the one-line way back if the team
-  wants the ONNX demo live). The browser ONNX path itself is not yet verified
-  in a real browser session — no local browser was available to test against —
-  and the threaded WASM may need COOP/COEP headers on some servers. If it
-  cannot load, the panel shows the rules fallback, so the world still plays.
+  verified with a real session in Node and in a real browser — see the
+  COOP/COEP note — and available to any world that lists it first; the court
+  leads with rules so the sample never fetches the ~29 MB WASM; flipping the
+  two manifest entries is the one-line way back if the team wants the ONNX
+  demo live). Real-browser check, Nov 16 (Playwright Chromium 159): the ONNX
+  rebounder loads and runs with no COOP/COEP headers — `numThreads = 1` means
+  no `SharedArrayBuffer` is needed — and identically with the headers on. If
+  the WASM ever cannot load, the panel shows the rules fallback, so the world
+  still plays.

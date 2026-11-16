@@ -63,10 +63,12 @@ dead-zone never kills a genuine movement.
 
 In the browser the ONNX Runtime WASM asset (~29 MB, the threaded SIMD build
 onnxruntime-web ships) is fetched lazily, only when an ONNX model actually
-loads — worlds that lead with a rules model never fetch it. The threaded WASM
-may need a cross-origin-isolated page (COOP/COEP headers) on some servers; if
-it cannot load there, the loader falls back to the rules model and reports it,
-so the world still plays.
+loads — worlds that lead with a rules model never fetch it. Verified Nov 16 in
+a real browser (Playwright Chromium 159): the ONNX rebounder loads and runs
+with no COOP/COEP headers at all, because the runtime is pinned to one thread
+(`env.wasm.numThreads = 1`) and never needs `SharedArrayBuffer`. See
+`docs/notes/onnx-wasm-coop-coep.md`. If the WASM ever cannot load, the loader
+falls back to the rules model and reports it, so the world still plays.
 
 To retrain (needs Python + the `onnx` / `onnxruntime` / `numpy` packages):
 
