@@ -15,3 +15,6 @@ apps/player/public/samples/
 tools/img2world/.cache/
 *.onnx
 *.bin
+
+# pack-court.ts output (generated; canonical examples/court/court.wgif stays committed)
+examples/court/court.gen.wgif
