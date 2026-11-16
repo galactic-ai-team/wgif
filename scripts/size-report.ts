@@ -33,6 +33,8 @@ export interface Budgets {
   worldMaxEntries: number
   worldEntryBytes: Record<string, number>
   worldEntryDefaultBytes: number
+  worldMaxUncompressedBytes: number
+  worldMaxCompressionRatio: number
   playerInitialJsGzipBytes: number
   playerDeferredChunkGzipBytes: number
   playerDistGzipBytes: number
@@ -46,6 +48,8 @@ export function loadBudgets(absPath: string): Budgets {
     'worldMaxEntries',
     'worldEntryBytes',
     'worldEntryDefaultBytes',
+    'worldMaxUncompressedBytes',
+    'worldMaxCompressionRatio',
     'playerInitialJsGzipBytes',
     'playerDeferredChunkGzipBytes',
     'playerDistGzipBytes',
@@ -401,6 +405,37 @@ export function checkBudgets(report: SizeReport, budgets: Budgets): Violation[] 
           actual: e.expandedBytes,
           limit,
           message: `${w.path} → ${e.name}: ${formatBytes(e.expandedBytes)} > ${formatBytes(limit)}`,
+        })
+      }
+    }
+    const totalUncompressed = w.entries.reduce((a, e) => a + e.expandedBytes, 0)
+    if (totalUncompressed > budgets.worldMaxUncompressedBytes) {
+      v.push({
+        id: 'world.uncompressedTotal',
+        subject: w.path,
+        actual: totalUncompressed,
+        limit: budgets.worldMaxUncompressedBytes,
+        message:
+          `${w.path}: uncompressed total ${formatBytes(totalUncompressed)} > ` +
+          `${formatBytes(budgets.worldMaxUncompressedBytes)} (zip-bomb guard)`,
+      })
+    }
+    // Per-entry ratio guard: only entries with >= 4096 stored bytes are
+    // checked. Small JSON compresses 50-100x naturally and flagging those
+    // would be noise. A zip bomb trips this on its one oversized entry.
+    for (const e of w.entries) {
+      if (e.storedBytes < 4096) continue
+      const ratio = e.expandedBytes / e.storedBytes
+      if (ratio > budgets.worldMaxCompressionRatio) {
+        v.push({
+          id: 'world.entryRatio',
+          subject: `${w.path} → ${e.name}`,
+          actual: Math.round(ratio),
+          limit: budgets.worldMaxCompressionRatio,
+          message:
+            `${w.path} → ${e.name}: ${ratio.toFixed(1)}× expansion > ` +
+            `${budgets.worldMaxCompressionRatio}× ` +
+            `(${formatBytes(e.storedBytes)} → ${formatBytes(e.expandedBytes)})`,
         })
       }
     }

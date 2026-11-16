@@ -78,6 +78,8 @@ const BUDGETS: Budgets = {
   worldMaxEntries: 8,
   worldEntryBytes: { 'preview.png': 256 },
   worldEntryDefaultBytes: 512,
+  worldMaxUncompressedBytes: 2048,
+  worldMaxCompressionRatio: 4,
   playerInitialJsGzipBytes: 1024,
   playerDeferredChunkGzipBytes: 512,
   playerDistGzipBytes: 4096,
@@ -138,6 +140,67 @@ describe('checkBudgets', () => {
 
   it('passes an empty report', () => {
     expect(checkBudgets(base(), BUDGETS)).toEqual([])
+  })
+
+  it('flags uncompressed total over the zip-bomb cap', () => {
+    const report = base({
+      worlds: [
+        {
+          path: 'examples/bomb/bomb.wgif',
+          sha256: 'x'.repeat(64),
+          totalBytes: 900,
+          transferBytes: 900,
+          notes: [],
+          entries: [
+            { name: 'a.json', storedBytes: 400, expandedBytes: 1200, method: 0, zip64: false },
+            { name: 'b.json', storedBytes: 400, expandedBytes: 1200, method: 0, zip64: false },
+          ],
+        },
+      ],
+    })
+    const ids = checkBudgets(report, BUDGETS).map((v) => v.id)
+    expect(ids).toContain('world.uncompressedTotal')
+  })
+
+  it('flags a single entry whose expansion ratio is over budget', () => {
+    const report = base({
+      worlds: [
+        {
+          path: 'examples/ratio/ratio.wgif',
+          sha256: 'x'.repeat(64),
+          totalBytes: 5000,
+          transferBytes: 5000,
+          notes: [],
+          entries: [
+            // 4096 stored -> 40960 expanded = 10x, exceeds ratio limit 4
+            { name: 'big.bin', storedBytes: 4096, expandedBytes: 40960, method: 8, zip64: false },
+          ],
+        },
+      ],
+    })
+    const ids = checkBudgets(report, BUDGETS).map((v) => v.id)
+    expect(ids).toContain('world.entryRatio')
+  })
+
+  it('exempts small entries from the ratio check', () => {
+    const report = base({
+      worlds: [
+        {
+          path: 'examples/tiny/tiny.wgif',
+          sha256: 'x'.repeat(64),
+          totalBytes: 200,
+          transferBytes: 200,
+          notes: [],
+          entries: [
+            // 100 bytes stored -> 4000 expanded = 40x, but under the 4096
+            // stored-byte threshold, so the ratio guard skips it.
+            { name: 'game-state.json', storedBytes: 100, expandedBytes: 4000, method: 8, zip64: false },
+          ],
+        },
+      ],
+    })
+    const ids = checkBudgets(report, BUDGETS).map((v) => v.id)
+    expect(ids).not.toContain('world.entryRatio')
   })
 
   it('flags an oversized world and entry', () => {

@@ -26,6 +26,8 @@ Change a budget in one place: the JSON.
 | `interactions.json`, `game-state.json` | 32 KiB each | — | — |
 | any other entry | 256 KiB | — | — |
 | entries per world | 256 | — | — |
+| **uncompressed total per world** | **16 MiB** | — | — |
+| **compression ratio (per entry ≥ 4 KiB)** | **64×** | — | — |
 | **player JS, initial (entry graph) gzip** | **300 KiB** | ~209.9 KiB | 1.43× |
 | any single **deferred** JS chunk gzip | 512 KiB | — | — |
 | runtime WASM/models gzip (Phase One) | **0 B** | 0 B | — |
@@ -59,9 +61,13 @@ Why two numbers:
 ### Optional runtimes: `requires[]` is the gate, the deferred budget is the cap
 
 A world that needs the ONNX runtime declares `requires: ["runtime.onnx"]`.
-When it does, the player lazy-loads the runtime as a deferred chunk. Today
-that chunk is ~107 KiB gzip — 21% of the 512 KiB per-deferred-chunk budget,
-79% headroom.
+When it does, the player lazy-loads the runtime as a deferred chunk. As of
+dev b1beba5 no world requires `runtime.onnx`, so the player has **zero**
+deferred chunks and zero runtime WASM: the rebounder uses a hand-written JS
+MLP (Option A, < 2 KiB). If `onnxruntime-web` glue lands later it is
+projected at ~107 KiB gzip (21% of the 512 KiB per-deferred-chunk budget);
+the ~28 MiB onnxruntime WASM still requires a Phase Two spec decision to
+raise `playerRuntimeWasmGzipBytes` from 0.
 
 We deliberately do **not** have a separate `onnxRuntimeGzipBytes` row in
 Phase One:
@@ -128,6 +134,8 @@ while landing a known-large change, and flip it back in the same PR).
 |---|---|
 | `world.glb` | quantize + meshopt (see `docs/ASSET-COMPRESSION.md`) |
 | `preview.png` | resize to ≤ 1024², re-encode; consider WebP |
+| uncompressed total | almost certainly a zip bomb or an unbounded entry. Check the largest expanded entry; a well-behaved world cannot exceed 16 MiB from a 1 MiB container |
+| compression ratio | the flagged entry (≥ 4 KiB stored) is padding, a placeholder, or hostile. Re-pack as real data, or drop it |
 | player **initial** JS | check the biggest initial chunk in the report; usually ajv, or a lazy dependency imported eagerly. Move it behind `import()` — it becomes deferred and stops counting against 300 KiB |
 | a single deferred chunk | if it exceeds 512 KiB, check whether the same file is also being pulled into the initial graph. If it is, split the shared code out before the lazy chunk grows further |
 | runtime WASM/models | Phase One forbids this outright. Either drop the feature or propose a Phase Two budget line and get it approved; do not just bump the number |
