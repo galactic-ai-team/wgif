@@ -23,8 +23,7 @@ export interface Rc1Spawn {
 }
 
 /**
- * Strict v0.1 RC1 provenance schema (`additionalProperties: false`):
- * only `parent`, `generator`, `params`, and `history` are permitted.
+ * WGIF v0.1 provenance object (`parent`, `generator`, `params`, `history`).
  */
 export interface Rc1Provenance {
   parent?: string;
