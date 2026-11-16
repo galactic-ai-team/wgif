@@ -7,6 +7,7 @@ import {
   createNpcHookFromModel,
   DEFAULT_COURT_BOUNDS,
   DEFAULT_HOME,
+  loadDeclaredRulesFallback,
   loadRulesModel,
   MAX_STEPS_PER_TICK,
   type BallObservation,
@@ -371,6 +372,21 @@ describe('createNpcHook from a world', () => {
     const result = await hook.tick(0.1, obs());
     expect(result.stepped).toBe(true);
     expect(result.action.state).toBe('chase');
+  });
+
+  it('selects the declared rules twin rather than the first same-purpose rules model', async () => {
+    const other: ModelEntry = { ...rulesDescriptor, id: 'other-rules', path: 'models/other.rules.json', tickHz: 20 };
+    const { manifest, files } = worldFiles([other, onnxDescriptor, rulesDescriptor], {
+      'models/other.rules.json': rulesBytes,
+    });
+    const world = await unpackWgif(await packWgif(manifest, files));
+    expect(world.report.ok).toBe(true);
+    const fallback = loadDeclaredRulesFallback(world, onnxDescriptor);
+    expect(fallback.model.id).toBe('rebounder-rules');
+    expect(fallback.tickHz).toBe(10);
+    expect(fallback.usedFallback).toBe(true);
+    const hook = await createNpcHook(world, 'rebounder', { preferRuntime: 'onnx' });
+    expect(hook.runtime).toBe('onnx');
   });
 
   it('falls back to the rules twin through the hook when the onnx file is corrupt', async () => {

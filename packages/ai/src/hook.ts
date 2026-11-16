@@ -1,6 +1,6 @@
 import type { WgifWorld } from '@wgif/format';
 import type { NpcAction, NpcModel, NpcObservation } from './types.js';
-import { loadModelFromWorld, type LoadedModel } from './loader.js';
+import { loadDeclaredRulesFallback, loadModelFromWorld, type LoadedModel } from './loader.js';
 
 /**
  * The per-tick NPC hook: the thing the player calls every animation frame.
@@ -231,7 +231,7 @@ export async function createNpcHook(world: WgifWorld, purpose = 'rebounder', opt
     runtime: loaded.runtime,
     usedFallback: loaded.usedFallback,
     warnings: loaded.warnings,
-  }, loaded.runtime === 'onnx'
-    ? { loadFallback: () => loadModelFromWorld(world, purpose, { preferRuntime: 'rules' }) }
+  }, loaded.runtime === 'onnx' && loaded.model.descriptor.fallback
+    ? { loadFallback: async () => loadDeclaredRulesFallback(world, loaded.model.descriptor) }
     : undefined);
 }

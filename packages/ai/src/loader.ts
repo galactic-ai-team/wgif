@@ -1,4 +1,4 @@
-import type { WgifWorld } from '@wgif/format';
+import type { ModelEntry, WgifWorld } from '@wgif/format';
 import type { NpcModel, Vec3 } from './types.js';
 import { DEFAULT_COURT_BOUNDS, DEFAULT_HOME } from './types.js';
 import { loadRulesModel, parseRulesModel } from './rules.js';
@@ -20,6 +20,23 @@ export function findModels(world: WgifWorld, purpose: string): import('@wgif/for
   return (world.manifest.models ?? []).filter((m) => m.purpose === purpose);
 }
 
+/** Resolve only the rules model named by the ONNX descriptor's fallback ID. */
+function declaredRulesTwin(world: WgifWorld, descriptor: ModelEntry): ModelEntry | undefined {
+  const twin = descriptor.fallback
+    ? (world.manifest.models ?? []).find((m) => m.id === descriptor.fallback)
+    : undefined;
+  return twin?.runtime === 'rules' && twin.purpose === descriptor.purpose && twin.fallback === undefined ? twin : undefined;
+}
+
+/** Load the exact declared rules fallback; do not select an arbitrary same-purpose rules model. */
+export function loadDeclaredRulesFallback(world: WgifWorld, descriptor: ModelEntry): LoadedModel {
+  const twin = declaredRulesTwin(world, descriptor);
+  if (!twin) throw new Error(`onnx model "${descriptor.id}" has no valid declared rules fallback`);
+  const bytes = world.files[twin.path];
+  if (!bytes) throw new Error(`fallback model "${twin.id}" points to missing file "${twin.path}"`);
+  return { model: loadRulesModel(twin, bytes), runtime: 'rules', usedFallback: true, tickHz: twin.tickHz ?? 10, warnings: [] };
+}
+
 /**
  * Court geometry for an ONNX model, read from its rules twin (same purpose)
  * when the world has one, so the two models agree about where home and the
@@ -27,8 +44,8 @@ export function findModels(world: WgifWorld, purpose: string): import('@wgif/for
  * pickup decision (it has no rules state machine to make it). Falls back to
  * the default court when there is no twin.
  */
-function geometryFromRulesTwin(world: WgifWorld, purpose: string): { home: Vec3; bounds: typeof DEFAULT_COURT_BOUNDS; pickupRadius: number } {
-  const twin = (world.manifest.models ?? []).find((m) => m.purpose === purpose && m.runtime === 'rules');
+function geometryFromRulesTwin(world: WgifWorld, descriptor: ModelEntry): { home: Vec3; bounds: typeof DEFAULT_COURT_BOUNDS; pickupRadius: number } {
+  const twin = declaredRulesTwin(world, descriptor);
   const bytes = twin ? world.files[twin.path] : undefined;
   if (!twin || !bytes) return { home: DEFAULT_HOME, bounds: DEFAULT_COURT_BOUNDS, pickupRadius: 0.45 };
   try {
@@ -74,7 +91,6 @@ export async function loadModelFromWorld(world: WgifWorld, purpose = 'rebounder'
     ? [...descriptors.filter((d) => d.runtime === opts.preferRuntime), ...descriptors.filter((d) => d.runtime !== opts.preferRuntime)]
     : descriptors;
   const warnings: string[] = [];
-  const byId = new Map(descriptors.map((d) => [d.id, d]));
   for (const descriptor of ordered) {
     const bytes = world.files[descriptor.path];
     if (!bytes) throw new Error(`model "${descriptor.id}" points to missing file "${descriptor.path}"`);
@@ -83,21 +99,16 @@ export async function loadModelFromWorld(world: WgifWorld, purpose = 'rebounder'
     }
     // onnx: try the JS MLP evaluator, fall back to the declared fallback on any load failure.
     try {
-      const { home, bounds, pickupRadius } = geometryFromRulesTwin(world, purpose);
+      const { home, bounds, pickupRadius } = geometryFromRulesTwin(world, descriptor);
       const model = await JsMlpNpc.load(descriptor, bytes, home, bounds, pickupRadius);
       return { model, runtime: 'onnx', usedFallback: false, tickHz: descriptor.tickHz ?? 10, warnings };
     } catch (e) {
       const reason = (e as Error).message;
       warnings.push(`onnx model "${descriptor.id}" could not load (${reason})`);
-      const fallback = descriptor.fallback ? byId.get(descriptor.fallback) : undefined;
-      if (!fallback) continue;
-      const fallbackBytes = world.files[fallback.path];
-      if (!fallbackBytes) {
-        throw new Error(`fallback model "${fallback.id}" points to missing file "${fallback.path}"`, { cause: e });
-      }
-      if (fallback.runtime !== 'rules') continue;
-      warnings.push(`using fallback rules model "${fallback.id}"`);
-      return { model: loadRulesModel(fallback, fallbackBytes), runtime: 'rules', usedFallback: true, tickHz: fallback.tickHz ?? 10, warnings };
+      if (!descriptor.fallback) continue;
+      const fallback = loadDeclaredRulesFallback(world, descriptor);
+      warnings.push(`using fallback rules model "${fallback.model.id}"`);
+      return { ...fallback, warnings };
     }
   }
   throw new Error(`no model with purpose "${purpose}" could be loaded: ${warnings.join('; ')}`);
