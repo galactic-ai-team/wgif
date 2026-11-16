@@ -29,6 +29,11 @@
           <p><strong>Drop a .wgif file here</strong></p>
           <p class="muted">or use “Open .wgif” / “Load sample court”. Everything runs locally in your browser.</p>
         </div>
+        <div id="refused" class="overlay" hidden>
+          <img id="refused-preview" alt="Preview of the world that could not be opened" hidden />
+          <p><strong id="refused-title"></strong></p>
+          <p id="refused-detail" class="muted"></p>
+        </div>
         <div id="drop" class="overlay drop" hidden>Release to open</div>
 
         <div id="scoreboard" hidden>
@@ -59,11 +64,21 @@
         <h2 id="title"></h2>
         <p id="creator" class="muted"></p>
         <p><span id="badge" class="badge"></span> <span id="sig" class="badge"></span></p>
+        <p id="mode-note" class="small"></p>
+        <p id="trust" class="small muted"></p>
         <p id="desc"></p>
         <p id="ai" class="muted small"></p>
         <section id="game" hidden>
           <h3>Shootout</h3>
           <p id="game-stats" class="small"></p>
+        </section>
+        <section id="layers-box" hidden>
+          <h3>Layers</h3>
+          <ul id="layers" class="small"></ul>
+        </section>
+        <section id="history-box" hidden>
+          <h3>History</h3>
+          <ul id="history" class="small"></ul>
         </section>
         <ul id="issues"></ul>
         <details>
