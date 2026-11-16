@@ -6,11 +6,11 @@ import { validateWorld } from './validate.js';
 import { fromUtf8, guessMediaType, isPrecompressed, isSafePath, sha256Hex, utf8 } from './util.js';
 import { checkZipStructure, ZipSafetyError } from './zipSafety.js';
 
-/** Uncompressed archive safety limits. Players MAY lower these for mobile. */
+/** Uncompressed untrusted-archive ceilings. Readers MAY impose tighter device limits. */
 export const DEFAULT_LIMITS = {
-  maxEntries: 4096,
-  maxEntryBytes: 256 * 1024 * 1024,
-  maxTotalBytes: 512 * 1024 * 1024,
+  maxEntries: 256,
+  maxEntryBytes: 16 * 1024 * 1024,
+  maxTotalBytes: 64 * 1024 * 1024,
 };
 export type Limits = typeof DEFAULT_LIMITS;
 export interface PackOptions {

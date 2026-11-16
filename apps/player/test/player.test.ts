@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import * as THREE from 'three';
+import { packWgif, unpackWgif } from '@wgif/format';
 import { parseGlb } from '../src/viewer.js';
 import { cameraHints, openWorld } from '../src/world.js';
 
@@ -19,6 +20,15 @@ describe('player pipeline (headless)', () => {
     expect(names).toEqual(expect.arrayContaining(['floor_court', 'rim_home', 'rim_away', 'ball']));
     const box = new THREE.Box3().setFromObject(group);
     expect(box.max.x - box.min.x).toBeGreaterThan(28);
+  });
+
+  it('refuses unsupported requires[] with a readable diagnostic', async () => {
+    const world = await unpackWgif(court);
+    const bytes = await packWgif({ ...world.manifest, requires: ['scene.glb', 'runtime.onnx'] }, world.files);
+    await expect(openWorld(bytes)).rejects.toMatchObject({
+      message: 'This world requires unsupported player features',
+      details: ['requires: runtime.onnx'],
+    });
   });
 
   it('rejects a corrupted file with a readable error', async () => {

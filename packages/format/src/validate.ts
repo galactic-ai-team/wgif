@@ -1,8 +1,8 @@
 import { Ajv, type ErrorObject, type ValidateFunction } from 'ajv';
-import manifestSchema from '../schema/manifest.v0.1.schema.json';
-import interactionsSchema from '../schema/interactions.v0.1.schema.json';
-import gameStateSchema from '../schema/game-state.v0.1.schema.json';
-import layerSchema from '../schema/layer.v0.1.schema.json';
+import manifestSchema from '../schema/manifest.v0.1.schema.json' with { type: 'json' };
+import interactionsSchema from '../schema/interactions.v0.1.schema.json' with { type: 'json' };
+import gameStateSchema from '../schema/game-state.v0.1.schema.json' with { type: 'json' };
+import layerSchema from '../schema/layer.v0.1.schema.json' with { type: 'json' };
 import { knownCapability } from './capabilities.js';
 import { externalGlbUris } from './glb.js';
 import { verifyManifestSignature } from './signing.js';

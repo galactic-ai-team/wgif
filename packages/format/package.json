@@ -17,7 +17,7 @@
   "files": ["src", "schema", "dist", "bin"],
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node dist/src/cli.js validate ../../tests/fixtures/good-minimal.wgif",
     "test": "vitest run"
   },
   "dependencies": {

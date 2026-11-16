@@ -2,9 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { zipSync, type Zippable } from 'fflate';
 import { runCli } from '../src/cli.js';
 import {
-  canonicalJson, generateKeyPair, readContainer, sha256Hex, signingHash, unpackWgif,
+  canonicalJson, DEFAULT_LIMITS, generateKeyPair, readContainer, sha256Hex, signingHash, unpackWgif,
   utf8, validateWorld, WgifReadError, type WgifManifest,
 } from '../src/index.js';
 
@@ -40,6 +41,18 @@ describe('JCS canonical signing vectors (no private keys in fixtures)', () => {
 });
 
 describe('portable WGIF fixture corpus', () => {
+  it('uses the bounded untrusted reader profile', () => {
+    expect(DEFAULT_LIMITS).toEqual({
+      maxEntries: 256,
+      maxEntryBytes: 16 * 1024 * 1024,
+      maxTotalBytes: 64 * 1024 * 1024,
+    });
+  });
+  it('rejects 257 ZIP entries using the default 256-entry ceiling', () => {
+    const archiveFiles: Zippable = { 'manifest.json': [utf8('{}'), { level: 0 }] };
+    for (let i = 0; i < 256; i++) archiveFiles[`assets/${i}.bin`] = [utf8('x'), { level: 0 }];
+    expect(() => readContainer(zipSync(archiveFiles))).toThrow(/entries/);
+  });
   const good = ['good-minimal.wgif', 'good-layered.wgif'];
   const badArchives = [
     'bad-notzip.wgif', 'bad-truncated.wgif', 'bad-duplicate.wgif',
