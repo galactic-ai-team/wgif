@@ -12,38 +12,76 @@ const meshes = (root: THREE.Object3D): THREE.Mesh[] => {
 const box = (root: THREE.Object3D): number[] => new THREE.Box3().setFromObject(root).min.toArray().concat(new THREE.Box3().setFromObject(root).max.toArray()).map((v) => +v.toFixed(4));
 const triangles = (root: THREE.Object3D): number => meshes(root).reduce((n, m) => n + (m.geometry.index?.count ?? m.geometry.attributes.position!.count) / 3, 0);
 
+// The court tests count what the court contains instead of pinning it, so court polish
+// (Gemini's markings in PR #14, the hash marks after it) does not break them.
+const KEEP = ['ball', 'rim_home', 'rim_away'];
+const kept = (o: THREE.Object3D): boolean => KEEP.includes(nodeName(o));
+const isGlass = (m: THREE.Mesh): boolean => (m.material as THREE.Material).transparent;
+/** The meshes the merge may touch, in the order it visits them: everything outside the kept nodes. */
+function statics(root: THREE.Object3D): THREE.Mesh[] {
+  const out: THREE.Mesh[] = [];
+  const visit = (o: THREE.Object3D): void => {
+    if (kept(o)) return;
+    if ((o as THREE.Mesh).isMesh) out.push(o as THREE.Mesh);
+    o.children.forEach(visit);
+  };
+  visit(root);
+  return out;
+}
+/** Colour, roughness and metalness, rounded to float32 the way the merged attributes store them. */
+const look = (...values: number[]): string => values.map(Math.fround).join(' ');
+
 describe('static merge (PERF.md fix #1)', () => {
-  it('collapses the court from 12 meshes to 5 draw calls without moving anything', async () => {
+  it('collapses the static court into one opaque and one glass draw call without moving anything', async () => {
     const { scene } = await open();
-    const keep = new Set(['ball', 'rim_home', 'rim_away']);
+    const total = meshes(scene).length, before = statics(scene);
+    const opaqueNames = before.filter((m) => !isGlass(m)).map((m) => m.name);
+    const glassNames = before.filter(isGlass).map((m) => m.name);
+    expect(opaqueNames.length).toBeGreaterThan(1);
+    expect(glassNames.length).toBeGreaterThan(1);
     const extentBefore = box(scene), trianglesBefore = triangles(scene);
-    expect(meshes(scene)).toHaveLength(12);
-    const stats = mergeStatic(scene, (o) => keep.has(nodeName(o)));
-    expect(stats).toEqual({ before: 9, after: 2 });
-    // ball + two rims kept, everything opaque in one mesh, both glass backboards in another.
-    expect(meshes(scene)).toHaveLength(5);
-    for (const name of keep) expect(findNodes(scene, name)).toHaveLength(1);
+    const stats = mergeStatic(scene, kept);
+    expect(stats).toEqual({ before: before.length, after: 2 });
+    // The kept ball and rims, everything opaque in one mesh, both glass backboards in another.
+    expect(meshes(scene)).toHaveLength(total - before.length + 2);
+    const merged = meshes(scene).filter((m) => m.name === 'wgif-merged');
+    expect(merged.map((m) => m.userData.wgif.merged).sort()).toEqual([opaqueNames, glassNames].sort());
+    for (const name of KEEP) expect(findNodes(scene, name)).toHaveLength(1);
     expect(box(scene)).toEqual(extentBefore);
     expect(triangles(scene)).toBe(trianglesBefore);
   });
 
   it('keeps each surface its own colour, roughness and metalness, per vertex', async () => {
     const { scene } = await open();
-    mergeStatic(scene, (o) => ['ball', 'rim_home', 'rim_away'].includes(nodeName(o)));
-    const opaque = meshes(scene).find((m) => m.name === 'wgif-merged' && !(m.material as THREE.Material).transparent)!;
+    const surfaces = statics(scene).filter((m) => !isGlass(m)).map((m) => {
+      const { color, roughness, metalness } = m.material as THREE.MeshStandardMaterial;
+      return { name: m.name, vertices: m.geometry.attributes.position!.count, look: look(color.r, color.g, color.b, roughness, metalness) };
+    });
+    expect(new Set(surfaces.map((s) => s.look)).size).toBeGreaterThan(1); // or there would be nothing to keep apart
+    const glassOpacity = (statics(scene).find(isGlass)!.material as THREE.MeshStandardMaterial).opacity;
+    mergeStatic(scene, kept);
+    const opaque = meshes(scene).find((m) => m.name === 'wgif-merged' && !isGlass(m))!;
     const material = opaque.material as THREE.MeshStandardMaterial;
     expect(material.vertexColors).toBe(true);
     expect(material.customProgramCacheKey()).toBe('wgif-per-vertex-pbr');
-    expect(opaque.userData.wgif.merged.sort()).toEqual(['bleachers', 'court_keys', 'court_lines', 'floor_apron', 'floor_court', 'hoop_away_support', 'hoop_home_support']);
+    // The surfaces are laid end to end in the order they were merged; every vertex of each one
+    // must carry that surface's own colour, roughness and metalness.
+    expect(opaque.userData.wgif.merged).toEqual(surfaces.map((s) => s.name));
     const g = opaque.geometry;
-    const roughness = new Set(Array.from(g.getAttribute('wgifRoughness').array as Float32Array).map((v) => +v.toFixed(2)));
-    const metalness = new Set(Array.from(g.getAttribute('wgifMetalness').array as Float32Array).map((v) => +v.toFixed(2)));
-    expect([...roughness].sort()).toEqual([0.4, 0.5, 0.6, 0.7, 0.9]);
-    expect([...metalness].sort()).toEqual([0, 0.8]);
+    const [color, roughness, metalness] = ['color', 'wgifRoughness', 'wgifMetalness'].map((name) => g.getAttribute(name).array as Float32Array) as [Float32Array, Float32Array, Float32Array];
+    const wrong: string[] = [];
+    let v = 0;
+    for (const s of surfaces) {
+      for (const end = v + s.vertices; v < end; v++) {
+        if (look(color[v * 3]!, color[v * 3 + 1]!, color[v * 3 + 2]!, roughness[v]!, metalness[v]!) !== s.look) wrong.push(`${s.name} vertex ${v}`);
+      }
+    }
+    expect(wrong).toEqual([]);
+    expect(v).toBe(g.attributes.position!.count);
     // The glass shares one material, so it merges as it is: no per-vertex attributes needed.
-    const glass = meshes(scene).find((m) => (m.material as THREE.Material).transparent)!;
+    const glass = meshes(scene).find((m) => m.name === 'wgif-merged' && isGlass(m))!;
     expect(glass.geometry.getAttribute('wgifRoughness')).toBeUndefined();
-    expect((glass.material as THREE.MeshStandardMaterial).opacity).toBe(0.45);
+    expect((glass.material as THREE.MeshStandardMaterial).opacity).toBe(glassOpacity);
   });
 
   it('handles mirrored and transformed nodes, and leaves lone meshes alone', () => {
