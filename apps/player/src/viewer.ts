@@ -30,6 +30,8 @@ export class WorldViewer {
   private timer = new THREE.Timer();
   mode: ControlMode = 'orbit';
   onModeChange?: (mode: ControlMode, locked: boolean) => void;
+  /** Called every frame with the frame delta (seconds), after camera updates. Set by world-specific AI wiring; the viewer itself never reads it. */
+  onTick?: (dt: number) => void;
 
   constructor(private host: HTMLElement) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -124,6 +126,7 @@ export class WorldViewer {
     } else if (this.mode === 'orbit') {
       this.orbit.update();
     }
+    this.onTick?.(dt);
     this.renderer.render(this.scene, this.camera);
   }
 
