@@ -8,7 +8,7 @@ import { renderPreviewPng } from './preview.js';
  */
 export function interactions() {
   return {
-    version: '0.1-draft',
+    version: '0.1',
     camera: { spawn: [0, 1.7, 9.5], lookAt: [0, 1.2, 0], firstPersonHeight: 1.7, bounds: { min: [-17, 0, -10], max: [17, 6, 10] } },
     objects: [
       {
@@ -37,7 +37,7 @@ export function interactions() {
 
 export function gameState() {
   return {
-    version: '0.1-draft',
+    version: '0.1',
     minigames: { shootout: { highScore: 0, plays: 0 } },
     objects: { ball: { position: BALL_START } },
   };
