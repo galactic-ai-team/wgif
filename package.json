@@ -16,7 +16,7 @@
   "scripts": {
     "lint": "eslint .",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present && vitest run scripts",
     "build": "npm run build --workspaces --if-present",
     "pack:court": "npm run pack --workspace @wgif/example-court",
     "dev": "npm run dev --workspace @wgif/player",
