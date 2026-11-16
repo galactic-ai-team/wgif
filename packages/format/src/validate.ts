@@ -5,6 +5,7 @@ import gameStateSchema from '../schema/game-state.v0.1.schema.json' with { type:
 import layerSchema from '../schema/layer.v0.1.schema.json' with { type: 'json' };
 import { knownCapability } from './capabilities.js';
 import { externalGlbUris } from './glb.js';
+import { checkGlbExtensions } from './glbExtensions.js';
 import { verifyManifestSignature } from './signing.js';
 import type { ValidationIssue, ValidationReport, WgifFiles, WgifManifest } from './types.js';
 import { MODEL_SIZE_CAPS, WGIF_VERSION } from './types.js';
@@ -154,6 +155,8 @@ export async function validateWorld(manifest: unknown, files: WgifFiles): Promis
   const glb = files[m.entry.scene];
   if (glb && externalGlbUris(glb).length > 0)
     err('scene.external-uri', 'GLB contains an external URI; only embedded data is permitted', m.entry.scene);
+  if (glb) for (const issue of checkGlbExtensions(glb, m.requires ?? []))
+    err(issue.code, issue.message, m.entry.scene);
 
   if (m.mode === 'layered' && !m.layers?.length) warn('mode.layered', 'layered mode without layers[] is permitted');
   if (m.mode !== 'layered' && m.layers?.length) err('mode.layers', `layers[] requires mode "layered", got "${m.mode}"`);
