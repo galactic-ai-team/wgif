@@ -32,6 +32,8 @@ jobs:
         run: npm test
       - name: Build (library, sample world, player)
         run: npm run build
+      - name: Size report
+        run: npm run size:report -- --strict --summary "$GITHUB_STEP_SUMMARY"
       - name: Sample world is reproducible and committed
         run: git diff --exit-code -- examples/court/court.wgif
       - name: Size summary

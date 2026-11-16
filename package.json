@@ -19,7 +19,10 @@
     "test": "npm run test --workspaces --if-present",
     "build": "npm run build --workspaces --if-present",
     "pack:court": "npm run pack --workspace @wgif/example-court",
-    "dev": "npm run dev --workspace @wgif/player"
+    "dev": "npm run dev --workspace @wgif/player",
+    "size:report": "tsx scripts/size-report.ts",
+    "lab:compression": "tsx scripts/asset-compression-lab.ts",
+    "gen:validator": "tsx scripts/gen-validator.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
