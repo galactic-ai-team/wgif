@@ -96,10 +96,12 @@ interface GridInput {
   obs: NpcObservation;
 }
 
+type AgreementCounts = { velocity: number; pass: number; holding: number; state: number; composite: number };
+
 function buildShotGrid(seed: number): GridInput[] {
   const rnd = mulberry32(seed);
   const range = (lo: number, hi: number): number => lo + rnd() * (hi - lo);
-  const pick = <T,>(arr: readonly T[]): T => arr[Math.floor(rnd() * arr.length)];
+  const pick = <T,>(arr: readonly T[]): T => arr[Math.floor(rnd() * arr.length)] as T;
   const out: GridInput[] = [];
   let t = 0;
   const obs = (ball: NpcObservation['ball'], player: Vec3, self: Vec3): NpcObservation => ({
@@ -221,11 +223,11 @@ function mappedState(state: string): string {
 
 async function runGrid(
   grid: GridInput[],
-): Promise<{ actions: { rules: NpcAction; onnx: NpcAction }[]; counts: Record<string, number> }> {
+): Promise<{ actions: { rules: NpcAction; onnx: NpcAction }[]; counts: AgreementCounts }> {
   const rules = loadRulesModel(rulesDescriptor, rulesBytes);
   const mlp = await JsMlpNpc.load(onnxDescriptor, onnxBytes);
   const actions: { rules: NpcAction; onnx: NpcAction }[] = [];
-  const counts: Record<string, number> = {
+  const counts: AgreementCounts = {
     composite: 0,
     velocity: 0,
     pass: 0,
