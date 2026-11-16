@@ -87,8 +87,10 @@ export function packDeterministicWgifZip(files: ZipInputEntry[]): Uint8Array {
     const nameBytes = new TextEncoder().encode(file.path);
     const uncompressedCrc = crc32(file.data);
 
-    // RC1 requirement: manifest.json (or any entry with store: true) MUST be STORED (method 0)
-    const forceStore = file.path === 'manifest.json' || file.store === true;
+    // Force STORED (method 0) for manifest.json and compressed image formats (png, jpg, jpeg, webp, gif), not glb
+    const ext = file.path.split('.').pop()?.toLowerCase();
+    const isCompressedImage = ['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext || '');
+    const forceStore = file.path === 'manifest.json' || isCompressedImage || file.store === true;
 
     let payload = file.data;
     let method = 0;
