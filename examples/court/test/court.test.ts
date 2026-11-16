@@ -16,6 +16,16 @@ describe('example court', () => {
     const glb = world.files['world.glb']!;
     expect(new TextDecoder().decode(glb.subarray(0, 4))).toBe('glTF');
     expect(Array.from(world.files['preview.png']!.subarray(1, 4))).toEqual([0x50, 0x4e, 0x47]);
+    // interactions.json is the world the rebounder plays in (ball, rims,
+    // shootout): the packed file must contain it, and the manifest entry
+    // must resolve to it.
+    expect(world.manifest.entry.interactions).toBe('interactions.json');
+    const interactions = JSON.parse(new TextDecoder().decode(world.files['interactions.json']!)) as {
+      objects: { id: string }[];
+      minigames: { id: string }[];
+    };
+    expect(interactions.objects.map((o) => o.id)).toContain('ball');
+    expect(interactions.minigames.map((m) => m.id)).toContain('shootout');
     expect(a.byteLength).toBeLessThan(200 * 1024);
   });
 
