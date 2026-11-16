@@ -28,35 +28,78 @@ export function findSchema(root: string): string | null {
   return SCHEMA_CANDIDATES.find((rel) => existsSync(path.join(root, rel))) ?? null
 }
 
+type Draft = '04' | '06' | '07' | '2019-09' | '2020-12'
+
 /**
- * Ajv 8 has one build per JSON-Schema draft; each carries only its own
- * meta-schema. Picking the wrong one throws:
- *   "no schema with key or ref http://json-schema.org/draft-07/schema#"
- * so select by the schema's own `$schema` URI. Missing/unknown → draft-07,
- * which is Ajv's default build.
+ * Map a JSON Schema `$schema` URI to a draft identifier. Returns null when
+ * the URI is missing or unrecognized — callers must refuse to guess, because
+ * draft-07 and draft-2020-12 are not interchangeable at compile time.
+ */
+export function detectDraft(schemaUri: string | undefined): Draft | null {
+  if (!schemaUri) return null
+  if (schemaUri.includes('2020-12')) return '2020-12'
+  if (schemaUri.includes('2019-09')) return '2019-09'
+  if (schemaUri.includes('draft-07')) return '07'
+  if (schemaUri.includes('draft-06')) return '06'
+  if (schemaUri.includes('draft-04')) return '04'
+  return null
+}
+
+/**
+ * Flatten `{ default: { default: X } }` or `{ default: X }` to `X`.
+ * Ajv 8's per-draft builds are CJS; dynamic `import()` may add a wrapper
+ * layer depending on Node version and bundler. Both shapes must work.
+ */
+function unwrap(m: unknown): unknown {
+  let cur = m
+  while (cur && typeof cur === 'object' && 'default' in (cur as Record<string, unknown>)) {
+    const next = (cur as Record<string, unknown>).default
+    if (next === cur) break
+    cur = next
+  }
+  return cur
+}
+
+/**
+ * Build the Ajv instance that matches the schema's declared draft.
+ *
+ * Ajv 8 ships one build per draft; using the wrong one throws
+ * "no schema with key or ref http://json-schema.org/draft-07/schema#".
+ * Adding the meta-schema to the wrong class is not a fix — Ajv 2020
+ * rejects draft-07 keywords (`definitions`, `dependencies`, bare `items`).
  */
 async function makeAjv(schemaUri: string | undefined): Promise<{
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ajv: any
-  standaloneCode: (ajv: unknown, validate: unknown) => string
-  draft: '07' | '2019-09' | '2020-12'
+  ajv: { compile: (s: unknown) => unknown }
+  standaloneCode: (ajv: unknown, validate?: unknown) => string
+  draft: Draft
 }> {
   const opts = { allErrors: true, strict: false, code: { source: true, esm: true } } as const
-  const standaloneMod = (await import('ajv/dist/standalone/index.js')) as unknown as {
-    default: (ajv: unknown, validate?: unknown) => string
-  }
-  const standaloneCode = standaloneMod.default
+  const standaloneCode = unwrap(
+    (await import('ajv/dist/standalone/index.js')) as unknown,
+  ) as (ajv: unknown, validate?: unknown) => string
 
-  if (schemaUri?.includes('2020-12')) {
-    const Ajv2020 = (await import('ajv/dist/2020.js')).default.default
-    return { ajv: new Ajv2020(opts), standaloneCode, draft: '2020-12' }
+  const draft = detectDraft(schemaUri)
+  if (!draft) {
+    throw new Error(
+      `gen-validator: schema has no recognized $schema URI (got ${JSON.stringify(schemaUri)}). ` +
+        `Refusing to guess — draft-07 and draft-2020-12 are not interchangeable at compile time.`,
+    )
   }
-  if (schemaUri?.includes('2019-09')) {
-    const Ajv2019 = (await import('ajv/dist/2019.js')).default.default
-    return { ajv: new Ajv2019(opts), standaloneCode, draft: '2019-09' }
+  if (draft === '04' || draft === '06') {
+    throw new Error(
+      `gen-validator: schema declares draft-${draft}. Ajv 8's per-draft builds cover ` +
+        `07, 2019-09 and 2020-12 only; add ajv-draft-04 as a devDependency and route ` +
+        `draft-04/06 through it before using this schema.`,
+    )
   }
-  const Ajv = (await import('ajv')).default.default
-  return { ajv: new Ajv(opts), standaloneCode, draft: '07' }
+
+  type Ctor = new (o: typeof opts) => { compile: (s: unknown) => unknown }
+  let mod: unknown
+  if (draft === '2020-12') mod = await import('ajv/dist/2020.js')
+  else if (draft === '2019-09') mod = await import('ajv/dist/2019.js')
+  else mod = await import('ajv')
+  const Ajv = unwrap(mod) as Ctor
+  return { ajv: new Ajv(opts), standaloneCode, draft }
 }
 
 export async function generate(

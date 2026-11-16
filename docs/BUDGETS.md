@@ -26,7 +26,7 @@ Change a budget in one place: the JSON.
 | `interactions.json`, `game-state.json` | 32 KiB each | — | — |
 | any other entry | 256 KiB | — | — |
 | entries per world | 256 | — | — |
-| **player JS, initial (entry graph) gzip** | **300 KiB** | ~207 KiB | 1.45× |
+| **player JS, initial (entry graph) gzip** | **300 KiB** | ~209.9 KiB | 1.43× |
 | any single **deferred** JS chunk gzip | 512 KiB | — | — |
 | runtime WASM/models gzip (Phase One) | **0 B** | 0 B | — |
 | player dist total gzip (excl. `.map` and runtime WASM) | 1.5 MiB | — | — |
@@ -55,6 +55,28 @@ Why two numbers:
 - **0 B runtime WASM** in Phase One keeps "open a `.wgif` and it just works"
   honest: no headers, no MIME plumbing, no COOP/COEP, no 10 MiB fetch on a
   phone in a parking lot.
+
+### Optional runtimes: `requires[]` is the gate, the deferred budget is the cap
+
+A world that needs the ONNX runtime declares `requires: ["runtime.onnx"]`.
+When it does, the player lazy-loads the runtime as a deferred chunk. Today
+that chunk is ~107 KiB gzip — 21% of the 512 KiB per-deferred-chunk budget,
+79% headroom.
+
+We deliberately do **not** have a separate `onnxRuntimeGzipBytes` row in
+Phase One:
+
+1. `requires[]` is a stronger gate than any size limit. A world without the
+   capability requirement never downloads ONNX at all.
+2. The generic 512 KiB per-deferred-chunk budget already catches a size
+   regression in the ONNX glue.
+3. A dedicated row requires tagging "which deferred chunk is ONNX" from the
+   Vite manifest, which is not first-class and would break on any refactor
+   of the ONNX import path.
+4. Phase One ships **0 B runtime WASM** (`playerRuntimeWasmGzipBytes: 0`).
+   If Phase Two needs to raise this to ship the ~28 MiB onnxruntime WASM,
+   that's a spec decision for GPT-6 with `requires: ["runtime.onnx"]` made
+   mandatory on any world that triggers a WASM fetch.
 
 ## Time budgets (measured manually, see `docs/PERF.md`)
 
