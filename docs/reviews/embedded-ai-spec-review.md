@@ -79,13 +79,15 @@ The full §5.5 replacement text and the Q5 answer live in
   Ajv strict mode rejects `if`/`then` in the descriptor schema, so cross-field
   rules live in `validateWorld` — see the proposal doc.
 - **Lumi (coordinator):** nothing blocked. The court is playable end-to-end
-  with the rebounder live on the rules model (the ONNX clone is packed,
-  verified with a real session in Node and in a real browser — see the
-  COOP/COEP note — and available to any world that lists it first; the court
-  leads with rules so the sample never fetches the ~29 MB WASM; flipping the
-  two manifest entries is the one-line way back if the team wants the ONNX
-  demo live). Real-browser check, Nov 16 (Playwright Chromium 159): the ONNX
-  rebounder loads and runs with no COOP/COEP headers — `numThreads = 1` means
-  no `SharedArrayBuffer` is needed — and identically with the headers on. If
-  the WASM ever cannot load, the panel shows the rules fallback, so the world
+  with the rebounder live on the rules model (the ONNX clone is packed and
+  available to any world that lists it first; the court leads with rules so
+  the sample stays light; flipping the two manifest entries is the one-line
+  way back if the team wants the ONNX demo live). The ONNX model runs through
+  the hand-rolled JS MLP evaluator (Option A, no WASM at all — the
+  runtime-WASM budget is 0 B): verified Nov 16 in a real browser (Playwright
+  Chromium 159, plain and with COOP/COEP), the ONNX-first court loads as
+  "onnx model", the NPC chases and passes, and the built player contains no
+  `.wasm` asset and no onnxruntime reference. The earlier threaded-WASM
+  COOP/COEP check is recorded in the note; it is moot for the player now. If
+  the ONNX file cannot load, the panel shows the rules fallback, so the world
   still plays.

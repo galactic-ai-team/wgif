@@ -61,6 +61,26 @@ Nothing special — this is the current behaviour, and it is the right one:
 3. Worlds that lead with rules never fetch the WASM at all (the court does this, so the
    sample stays light); worlds that lead with ONNX pay one lazy ~29 MB fetch.
 
+## Addendum — Option A (Nov 16, 2026)
+
+The player no longer ships ONNX Runtime Web at all. Dee's Option A was
+adopted: the rebounder's `.onnx` file is evaluated by a hand-rolled JS MLP
+evaluator (`packages/ai/src/jsmlp.ts`), because PR #3 sets the runtime-WASM
+budget to 0 B. The findings above still stand for the ONNX Runtime path,
+which remains as Node-side verification (`packages/ai/src/onnx.ts`, not
+exported from the package), but the COOP/COEP question is moot for the
+player — there is no WASM to isolate. Verified Nov 16 in the same browser
+harness: the ONNX-first court loads as "onnx model", the NPC moves (1s/4s
+screenshots differ) and settles (12s/15s identical), with zero WASM fetches
+and zero console errors, plain and with COOP/COEP.
+
+For the record, on Dee's question: the earlier check used the **threaded**
+build (`ort-wasm-simd-threaded.jsep.wasm` — the only WASM file the
+`onnxruntime-web` 1.23 bundle references; there is no single-thread build in
+the bundle), run single-threaded at `numThreads = 1`. So the check proved
+the threaded binary instantiates and runs without cross-origin isolation when
+limited to one thread — not that a single-thread build exists.
+
 ## How to reproduce the check
 
 The check is not in the repo (Playwright is not a repo dependency). To repeat it:

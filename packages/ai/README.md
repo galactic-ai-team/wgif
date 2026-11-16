@@ -12,12 +12,15 @@ packages/ai/
   src/
     types.ts    Observation / action / model interfaces
     rules.ts    Rules-model parser (fail-closed) + deterministic RulesNpc
-    onnx.ts     OnnxNpc: lazy onnxruntime-web (WASM, CPU, 1 thread) + feature contract
+    features.ts Feature contract (obs [1, 14] / action [1, 3]) + descriptor-signature check
+    jsmlp.ts    JsMlpNpc: hand-rolled JS MLP evaluator (the player runtime for onnx)
+    onnx.ts     OnnxNpc: ONNX Runtime Web — Node-side verification only, not exported
     loader.ts   loadModelFromWorld(): best model for a purpose, with fallback
   scripts/
     train_rebounder_mlp.py   Trains + exports + verifies rebounder-mlp.onnx
   test/
     ai.test.ts
+    fixtures/   Bad-shape / bad-dtype / truncated .onnx files for the fail-closed tests
 ```
 
 ## The rebounder
@@ -54,21 +57,29 @@ target is one rules tick from the canonical state for the observation (see
 within one tick everywhere.
 
 Feature order (`obs`, `[1, 14]`, float32) is a contract shared by the script,
-`src/onnx.ts` (`ONNX_OBS_FEATURES`) and the manifest descriptor — change it in
-all three places, never one. The runtime also applies a 0.4 m/s speed dead-zone
-(`ONNX_DEAD_ZONE_MS`): the network's output noise floor is ~0.1–0.4 m/s, so
-below that the NPC is stationary — the same idea as the rules model's arrive
-radius. The slowest real command is the 1.5 m/s return-home walk, so the
-dead-zone never kills a genuine movement.
+`src/features.ts` (`ONNX_OBS_FEATURES`), both evaluators and the manifest
+descriptor — change it in all four places, never one. The runtime also applies
+a 0.4 m/s speed dead-zone (`ONNX_DEAD_ZONE_MS`): the network's output noise
+floor is ~0.1–0.4 m/s, so below that the NPC is stationary — the same idea as
+the rules model's arrive radius. The slowest real command is the 1.5 m/s
+return-home walk, so the dead-zone never kills a genuine movement.
 
-In the browser the ONNX Runtime WASM asset (~29 MB, the threaded SIMD build
-onnxruntime-web ships) is fetched lazily, only when an ONNX model actually
-loads — worlds that lead with a rules model never fetch it. Verified Nov 16 in
-a real browser (Playwright Chromium 159): the ONNX rebounder loads and runs
-with no COOP/COEP headers at all, because the runtime is pinned to one thread
-(`env.wasm.numThreads = 1`) and never needs `SharedArrayBuffer`. See
-`docs/notes/onnx-wasm-coop-coep.md`. If the WASM ever cannot load, the loader
-falls back to the rules model and reports it, so the world still plays.
+ONNX models run through the hand-rolled JS MLP evaluator (`src/jsmlp.ts`,
+Option A): it reads the six trained tensors straight out of the `.onnx` file
+and runs the forward pass in plain JavaScript — no onnxruntime-web, no WASM,
+no COOP/COEP question. The runtime-WASM budget is 0 B (PR #3), so the player
+bundle ships zero WASM: verified Nov 16, the built player contains no `.wasm`
+asset and no onnxruntime reference, and the ONNX rebounder loads and runs in a
+real browser (Playwright Chromium 159, plain and with COOP/COEP) with no WASM
+fetch and no console errors. The evaluator is fail-closed: wrong weight
+shapes, missing weights, non-float32 weights and a descriptor that does not
+promise the `obs [1, 14] float32 -> action [1, 3] float32` signature all
+throw at load, and the loader falls back to the rules model. ONNX Runtime Web
+(`src/onnx.ts`) stays as the independent Node-side cross-check — the two
+evaluators must agree on every observation — and is not exported from the
+package, so the player bundle can never pull it in. See
+`docs/notes/onnx-wasm-coop-coep.md` for the earlier threaded-WASM check that
+motivated Option A (threaded build, single-threaded at `numThreads = 1`).
 
 To retrain (needs Python + the `onnx` / `onnxruntime` / `numpy` packages):
 
@@ -90,10 +101,10 @@ const { model, runtime, usedFallback, tickHz, warnings } = await loadModelFromWo
 const action = await model.update(observation, dt);
 ```
 
-`onnxruntime-web` is a devDependency of this package and is imported lazily,
-only when an ONNX model is actually used — the player bundle never pays for it
-otherwise. A broken ONNX file falls back to its declared `fallback` model;
-a broken rules model is a load error, because the rules are the fallback.
+`onnxruntime-web` is a devDependency of this package for the Node-side
+verification tests only, and is never imported by the player path. A broken
+ONNX file falls back to its declared `fallback` model; a broken rules model is
+a load error, because the rules are the fallback.
 
 ## Player hook
 

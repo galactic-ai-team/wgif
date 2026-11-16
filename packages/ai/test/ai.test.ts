@@ -3,8 +3,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { packWgif, unpackWgif, utf8, type ModelEntry, type WgifFiles } from '@wgif/format';
 import {
+  JsMlpNpc,
   ONNX_OBS_FEATURES,
-  OnnxNpc,
   loadModelFromWorld,
   loadRulesModel,
   observationToFeatures,
@@ -14,6 +14,7 @@ import {
   type NpcObservation,
   type Vec3,
 } from '../src/index.js';
+import { OnnxNpc } from '../src/onnx.js';
 
 const rulesPath = fileURLToPath(new URL('../../../examples/court/models/rebounder.rules.json', import.meta.url));
 const onnxPath = fileURLToPath(new URL('../../../examples/court/models/rebounder-mlp.onnx', import.meta.url));
@@ -233,6 +234,75 @@ describe('onnx rebounder', () => {
     );
     expect(action.passBall).toBe(true);
   });
+
+  it('rejects models whose live session disagrees with the declared signature', async () => {
+    const wrongShape = new Uint8Array(readFileSync(fileURLToPath(new URL('./fixtures/wrong-output-shape.onnx', import.meta.url))));
+    await expect(OnnxNpc.load(onnxDescriptor, wrongShape)).rejects.toThrow(/shape \[1, 2\], expected \[1, 3\]/);
+    const wrongDtype = new Uint8Array(readFileSync(fileURLToPath(new URL('./fixtures/wrong-input-dtype.onnx', import.meta.url))));
+    await expect(OnnxNpc.load(onnxDescriptor, wrongDtype)).rejects.toThrow(/rejected the declared input/);
+  });
+
+  it('rejects a descriptor that does not promise the evaluator signature', async () => {
+    const bad = { ...onnxDescriptor, inputs: [{ name: 'obs', shape: [1, 8], dtype: 'float32' as const }] };
+    await expect(OnnxNpc.load(bad, onnxBytes)).rejects.toThrow(/declares "obs" as float32 \[1, 8\]/);
+  });
+});
+
+describe('js mlp evaluator (Option A — the player runtime)', () => {
+  const cases = [
+    obs(),
+    obs({ ball: { position: [3, 0.12, -2], velocity: [1, 0, 0] } }),
+    obs({ ball: { position: [0.2, 0.9, 6.1], heldBy: 'rebounder' }, self: { position: [0, 0, 6] } }),
+    obs({ ball: { position: [0, 0.9, 9.4], heldBy: 'rebounder' }, self: { position: [0, 0, 9] } }),
+    obs({ ball: { position: [0, 0.9, 9.5], heldBy: 'player' } }),
+    obs({ ball: { position: [25, 0.12, 0] } }),
+  ];
+
+  it('loads the trained model, is deterministic, and agrees with the rules model', async () => {
+    const mlp = await JsMlpNpc.load(onnxDescriptor, onnxBytes);
+    const rules = loadRulesModel(rulesDescriptor, rulesBytes);
+    for (const o of cases) {
+      const a = await mlp.update(o, 0.1);
+      const b = await mlp.update(o, 0.1);
+      expect(a).toEqual(b); // deterministic
+      rules.reset();
+      await rules.update(o, 0.1);
+      const r = await rules.update(o, 0.1);
+      const dot = a.velocity[0] * r.velocity[0] + a.velocity[2] * r.velocity[2];
+      const mags = Math.hypot(a.velocity[0], a.velocity[2]) * Math.hypot(r.velocity[0], r.velocity[2]);
+      if (mags > 0.1) expect(dot / mags).toBeGreaterThan(0.9); // same direction as the rules model
+      expect(a.passBall).toBe(r.passBall);
+    }
+  });
+
+  it('agrees with the onnx runtime evaluator on every observation', async () => {
+    const js = await JsMlpNpc.load(onnxDescriptor, onnxBytes);
+    const ort = await OnnxNpc.load(onnxDescriptor, onnxBytes);
+    for (const o of cases) {
+      const a = await js.update(o, 0.1);
+      const b = await ort.update(o, 0.1);
+      // JS does its accumulation in float64, ORT in float32 — allow 1e-4.
+      expect(a.velocity[0]).toBeCloseTo(b.velocity[0], 4);
+      expect(a.velocity[2]).toBeCloseTo(b.velocity[2], 4);
+      expect(a.passBall).toBe(b.passBall);
+      expect(a.state).toBe(b.state);
+    }
+  });
+
+  it('rejects models with missing or wrongly-shaped weights, and garbage bytes', async () => {
+    const load = (name: string) =>
+      JsMlpNpc.load(onnxDescriptor, new Uint8Array(readFileSync(fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url)))));
+    await expect(load('wrong-output-shape.onnx')).rejects.toThrow(/missing weight "W1"/);
+    await expect(load('wrong-input-dtype.onnx')).rejects.toThrow(/missing weight "W1"/);
+    await expect(load('wrong-w3-shape.onnx')).rejects.toThrow(/weight "W3" has shape \[32, 2\], expected \[32, 3\]/);
+    await expect(load('truncated.onnx')).rejects.toThrow(/could not read onnx weights/);
+    await expect(JsMlpNpc.load(onnxDescriptor, new TextEncoder().encode('not an onnx model'))).rejects.toThrow(/could not read onnx weights/);
+  });
+
+  it('rejects a descriptor that does not promise the evaluator signature', async () => {
+    const bad = { ...onnxDescriptor, inputs: [{ name: 'obs', shape: [1, 8], dtype: 'float32' as const }] };
+    await expect(JsMlpNpc.load(bad, onnxBytes)).rejects.toThrow(/declares "obs" as float32 \[1, 8\]/);
+  });
 });
 
 describe('loading models from a world', () => {
@@ -286,6 +356,16 @@ describe('loading models from a world', () => {
     expect(loaded.warnings.length).toBeGreaterThan(0);
     const action = await loaded.model.update(obs(), 0.1);
     expect(action.state).toBe('chase');
+  });
+
+  it('falls back to the rules twin when the onnx model has the wrong shape', async () => {
+    const wrongShape = new Uint8Array(readFileSync(fileURLToPath(new URL('./fixtures/wrong-output-shape.onnx', import.meta.url))));
+    const { manifest, files } = worldFiles({ 'models/rebounder-mlp.onnx': wrongShape });
+    const world = await unpackWgif(await packWgif(manifest, files));
+    const loaded = await loadModelFromWorld(world, 'rebounder');
+    expect(loaded.runtime).toBe('rules');
+    expect(loaded.usedFallback).toBe(true);
+    expect(loaded.warnings.join(' ')).toMatch(/missing weight "W1"/);
   });
 
   it('loads rules-only worlds, and throws for an unknown purpose', async () => {

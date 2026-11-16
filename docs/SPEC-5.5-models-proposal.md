@@ -39,12 +39,16 @@ and the court example shipping both models.
 > behaviours, targets or non-deterministic declarations at load time, never at
 > play time. Rules are the fallback, so they must be trustworthy.
 >
-> **ONNX models** run through ONNX Runtime Web (WASM, CPU) or an equivalent
-> local runtime. The player MUST verify the session exposes the tensor names
-> the descriptor declares before running it. If an ONNX model cannot load
-> (runtime missing, bad file, tensor mismatch), the player MUST run its
-> declared `fallback` if one exists, and MUST report which runtime is actually
-> in use.
+> **ONNX models** run through an equivalent local runtime — in Phase One,
+> the hand-rolled JS MLP evaluator in `@wgif/ai` (`src/jsmlp.ts`), which reads
+> the weights out of the `.onnx` file and runs the forward pass in plain
+> JavaScript. The runtime-WASM budget is 0 B (PR #3), so ONNX Runtime Web
+> (WASM, CPU) is Node-side verification only and MUST NOT ship in the player.
+> The player MUST verify the model matches the descriptor's declared
+> signature (input/output names, shapes, dtypes) before running it. If an
+> ONNX model cannot load (bad file, weight/shape mismatch), the player MUST
+> run its declared `fallback` if one exists, and MUST report which runtime is
+> actually in use.
 >
 > **Which capabilities go in `requires[]`.** A world whose live behaviour or
 > whose fallback is a rules model lists `runtime.rules`. A world MUST NOT list

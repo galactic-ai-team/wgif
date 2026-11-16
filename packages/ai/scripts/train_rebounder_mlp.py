@@ -16,8 +16,9 @@ The export is verified in-process before it is written:
   - file size < 51200 bytes (the manifest sizeBytesMax for onnx models)
 
 The model is a *movement* clone of one rules tick, not a new policy: the
-feature order is the contract in packages/ai/src/onnx.ts (ONNX_OBS_FEATURES)
-and in the manifest descriptor inputs. Change it in all three places.
+feature order is the contract in packages/ai/src/features.ts (ONNX_OBS_FEATURES)
+and in the manifest descriptor inputs. Change it in all four places (script,
+features.ts, both evaluators, descriptor).
 
 Reproducibility: the RNG is seeded (7) and BLAS threads are pinned to 1, so
 re-running this script on the same machine reproduces the same bytes. Regenerate
@@ -146,7 +147,7 @@ def features(obs: dict, home: np.ndarray, bounds: tuple[np.ndarray, np.ndarray])
         np.clip(dist3(s, obs["ball_pos"]), 0, 20),
         # Explicit distances: the policy switches on them (pickup at 0.45 m,
         # pass at 1.6 m), and a tanh net approximates a radius poorly from
-        # raw dx/dz alone. Same order as ONNX_OBS_FEATURES in src/onnx.ts.
+        # raw dx/dz alone. Same order as ONNX_OBS_FEATURES in src/features.ts.
         np.clip(dist3(s, obs["player_pos"]), 0, 20),
         np.clip(dist3(s, home), 0, 20),
     ], dtype=np.float64)

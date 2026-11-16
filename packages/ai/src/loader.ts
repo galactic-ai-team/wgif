@@ -2,7 +2,7 @@ import type { WgifWorld } from '@wgif/format';
 import type { NpcModel, Vec3 } from './types.js';
 import { DEFAULT_COURT_BOUNDS, DEFAULT_HOME } from './types.js';
 import { loadRulesModel, parseRulesModel } from './rules.js';
-import { OnnxNpc, OnnxRuntimeUnavailableError } from './onnx.js';
+import { JsMlpNpc } from './jsmlp.js';
 
 export interface LoadedModel {
   model: NpcModel;
@@ -39,10 +39,14 @@ function geometryFromRulesTwin(world: WgifWorld, purpose: string): { home: Vec3;
 
 /**
  * Loads the best model for a purpose from an unpacked world. Tries descriptors
- * in manifest order; an ONNX model that cannot load (runtime missing, bad file)
+ * in manifest order; an ONNX model that cannot load (bad file, wrong weights)
  * falls back to its declared `fallback` model — normally the rules twin — and
  * reports that in `usedFallback`. A broken rules model is a load error, not a
  * silent skip: rules are the fallback, so they must be trustworthy.
+ *
+ * ONNX models run through the hand-rolled JS MLP evaluator (JsMlpNpc), not
+ * ONNX Runtime Web: the runtime-WASM budget is 0 B (PR #3), so no WASM ships
+ * in the player. The ort path (src/onnx.ts) is Node-side verification only.
  */
 export async function loadModelFromWorld(world: WgifWorld, purpose = 'rebounder'): Promise<LoadedModel> {
   const descriptors = findModels(world, purpose);
@@ -57,13 +61,13 @@ export async function loadModelFromWorld(world: WgifWorld, purpose = 'rebounder'
     if (descriptor.runtime === 'rules') {
       return { model: loadRulesModel(descriptor, bytes), runtime: 'rules', usedFallback: false, tickHz: descriptor.tickHz ?? 10, warnings };
     }
-    // onnx: try it, fall back to the declared fallback on any load failure.
+    // onnx: try the JS MLP evaluator, fall back to the declared fallback on any load failure.
     try {
       const { home, bounds } = geometryFromRulesTwin(world, purpose);
-      const model = await OnnxNpc.load(descriptor, bytes, home, bounds);
+      const model = await JsMlpNpc.load(descriptor, bytes, home, bounds);
       return { model, runtime: 'onnx', usedFallback: false, tickHz: descriptor.tickHz ?? 10, warnings };
     } catch (e) {
-      const reason = e instanceof OnnxRuntimeUnavailableError ? 'onnx runtime unavailable' : (e as Error).message;
+      const reason = (e as Error).message;
       warnings.push(`onnx model "${descriptor.id}" could not load (${reason})`);
       const fallback = descriptor.fallback ? byId.get(descriptor.fallback) : undefined;
       if (!fallback) continue;
