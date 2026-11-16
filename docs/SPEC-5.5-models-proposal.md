@@ -4,7 +4,8 @@
 Status: draft, for Stephon's review. The reference implementation is live on
 branch `feat/embedded-ai`: `packages/format/schema/model-descriptor.v0.1.schema.json`,
 the manifest schema sync, the validator rules in `packages/format/src/validate.ts`,
-and the court example shipping both models.
+and the court example shipping both models. Packaging summary:
+`docs/notes/models-packaging.md`.
 
 ## Proposed replacement text for §5.5
 
@@ -12,7 +13,7 @@ and the court example shipping both models.
 >
 > Each embedded model is a file under `models/` with a descriptor in
 > `manifest.models[]`. A model is **data**, not code: a player runs it only
-> through its own built-in runtimes (a rules interpreter, ONNX Runtime Web),
+> through its own built-in runtimes (a rules interpreter, the JS MLP evaluator),
 > never by executing anything from the container (§5.6). Inference MUST be
 > on-device; a model MUST NOT fetch network resources.
 >
@@ -90,7 +91,7 @@ and the court example shipping both models.
   rebounder is deterministic (seed 7); its ONNX clone agrees with the rules
   model within one tick on every scripted case (held-out cosine 0.997).
 - **Size caps:** rules 64 KiB, onnx 50 KiB by default, 1 MiB hard ceiling.
-  The court ships 3,446 + 6,836 bytes of models in a 40,664-byte world.
+  The court ships 3,446 + 6,836 bytes of models in a 40,652-byte world.
 
 ## Open follow-ups (not in this patch)
 

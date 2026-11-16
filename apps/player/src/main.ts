@@ -73,7 +73,14 @@ async function openBytes(bytes: Uint8Array, name: string): Promise<void> {
     setHint(viewer.mode, false);
     renderInfo(world);
     document.title = `${world.manifest.title} — WGIF Player`;
-    courtAi = await attachCourtAi(world, viewer, cameraHints(world));
+    courtAi = await attachCourtAi(world, viewer, cameraHints(world), {
+      // A mid-game NPC failure disables the NPC (its marker is removed) and
+      // reports here, so the #ai line never claims a live NPC that is gone.
+      onError: (e) => {
+        courtAi = null;
+        $('ai').textContent = `Rebounder NPC disabled: ${(e as Error).message ?? String(e)}`;
+      },
+    });
     $('ai').textContent = courtAi
       ? `Rebounder NPC: ${courtAi.runtime} model${courtAi.usedFallback ? ' (rules fallback — ONNX could not run)' : ''} · watch the violet rebounder fetch the loose ball`
       : 'No rebounder NPC in this world.';

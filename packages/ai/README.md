@@ -109,6 +109,16 @@ a load error, because the rules are the fallback.
 ## Player hook
 
 `WorldViewer.onTick?: (dt: number) => void` is called every animation frame.
+The rebounder NPC is driven through the @wgif/ai per-tick hook —
+`createNpcHook(world, purpose)` returns `tick(dt, observation)`, which steps
+the model at its descriptor tickHz (at most 3 steps per call) and returns a
+`TickResult`: the current action, whether a step was committed (`stepped`),
+and the step sequence number (`step`). Velocity is persistent (the player
+integrates the last action's velocity every frame); gameplay events are
+one-shot and are applied only when `stepped` is true. A rejected step
+propagates — the player disables the NPC and reports it — and a step that
+resolves after reset/dispose is discarded. See
+`docs/notes/models-packaging.md` for the packaging summary.
 The player wires it in `apps/player/src/ai.ts`: step the model at its
 `tickHz` (10 Hz), integrate the velocity between ticks, move the rebounder
 marker and the ball node. This hook is deliberately tiny — Claude owns the
