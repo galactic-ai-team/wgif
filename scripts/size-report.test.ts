@@ -78,6 +78,8 @@ const BUDGETS: Budgets = {
   worldMaxEntries: 8,
   worldEntryBytes: { 'preview.png': 256 },
   worldEntryDefaultBytes: 512,
+  worldMaxUncompressedBytes: 2048,
+  worldMaxCompressionRatio: 4,
   playerInitialJsGzipBytes: 1024,
   playerDeferredChunkGzipBytes: 512,
   playerDistGzipBytes: 4096,

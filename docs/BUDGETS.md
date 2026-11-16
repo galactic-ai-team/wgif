@@ -26,6 +26,8 @@ Change a budget in one place: the JSON.
 | `interactions.json`, `game-state.json` | 32 KiB each | — | — |
 | any other entry | 256 KiB | — | — |
 | entries per world | 256 | — | — |
+| **uncompressed total per world** | **16 MiB** | — | — |
+| **compression ratio (per entry ≥ 4 KiB)** | **64×** | — | — |
 | **player JS, initial (entry graph) gzip** | **300 KiB** | ~209.9 KiB | 1.43× |
 | any single **deferred** JS chunk gzip | 512 KiB | — | — |
 | runtime WASM/models gzip (Phase One) | **0 B** | 0 B | — |
