@@ -33,9 +33,10 @@ export interface Budgets {
   worldMaxEntries: number
   worldEntryBytes: Record<string, number>
   worldEntryDefaultBytes: number
-  playerJsGzipBytes: number
-  playerChunkGzipBytes: number
+  playerInitialJsGzipBytes: number
+  playerDeferredChunkGzipBytes: number
   playerDistGzipBytes: number
+  playerRuntimeWasmGzipBytes: number
 }
 
 export function loadBudgets(absPath: string): Budgets {
@@ -45,9 +46,10 @@ export function loadBudgets(absPath: string): Budgets {
     'worldMaxEntries',
     'worldEntryBytes',
     'worldEntryDefaultBytes',
-    'playerJsGzipBytes',
-    'playerChunkGzipBytes',
+    'playerInitialJsGzipBytes',
+    'playerDeferredChunkGzipBytes',
     'playerDistGzipBytes',
+    'playerRuntimeWasmGzipBytes',
   ]
   for (const key of required) {
     if (raw[key] === undefined) throw new Error(`budgets: missing key "${key}" in ${absPath}`)
@@ -211,7 +213,19 @@ export interface PlayerReport {
   distDir: string
   files: DistFile[]
   jsGzip: number
+  /** JS reachable from the entry's static `imports` graph, gzip. */
+  jsInitialGzip: number
+  /** JS only reachable via `dynamicImports` (or unreferenced), gzip. */
+  jsDeferredGzip: number
+  /** Initial JS files (Vite manifest `imports` closure of the entry). */
+  initial: DistFile[]
+  /** Deferred JS files. */
+  deferred: DistFile[]
+  /** Total gzip of `.wasm` and `.onnx` files, or 0. */
+  wasmGzip: number
   totalGzip: number
+  /** True when a Vite manifest was read (`.vite/manifest.json` or `manifest.json`). */
+  manifestFound: boolean
 }
 
 export interface Violation {
@@ -256,21 +270,103 @@ export function measureWorld(root: string, rel: string): WorldReport {
   }
 }
 
+// ---------------------------------------------------------------------------
+// vite manifest (which JS files load eagerly)
+// ---------------------------------------------------------------------------
+
+interface ViteManifestChunk {
+  file: string
+  isEntry?: boolean
+  isDynamicEntry?: boolean
+  imports?: string[]
+  dynamicImports?: string[]
+}
+
+export type ViteManifest = Record<string, ViteManifestChunk>
+
+/** Vite 5 puts the manifest under `.vite/`; Vite 4 puts it at the dist root. Try both. */
+export function readViteManifest(distAbs: string): ViteManifest | null {
+  for (const rel of ['.vite/manifest.json', 'manifest.json']) {
+    const abs = path.join(distAbs, rel)
+    if (!existsSync(abs)) continue
+    try {
+      return JSON.parse(readFileSync(abs, 'utf8')) as ViteManifest
+    } catch {
+      return null
+    }
+  }
+  return null
+}
+
+/**
+ * Files reachable from any entry through static `imports` — the JS the browser
+ * must parse before the app can render. `dynamicImports` is NOT followed.
+ *
+ * The `imports` array holds manifest *keys* (like `"_shared-abc.js"`), not
+ * file paths, so the lookup is `manifest[key]`, not a path join.
+ */
+export function computeInitialFiles(manifest: ViteManifest): Set<string> {
+  const initial = new Set<string>()
+  const queue: ViteManifestChunk[] = []
+  for (const chunk of Object.values(manifest)) {
+    if (chunk.isEntry) queue.push(chunk)
+  }
+  while (queue.length > 0) {
+    const chunk = queue.shift() as ViteManifestChunk
+    if (initial.has(chunk.file)) continue
+    initial.add(chunk.file)
+    for (const key of chunk.imports ?? []) {
+      const child = manifest[key]
+      if (child) queue.push(child)
+    }
+  }
+  return initial
+}
+
 export function measurePlayer(distDir: string): PlayerReport | null {
   if (!existsSync(distDir)) return null
-  const rels = findFiles(distDir, () => true)
+  // Exclude source maps and the manifest file itself from measurement.
+  const rels = findFiles(
+    distDir,
+    (r) => !r.endsWith('.map') && !/^(.vite\/)?manifest\.json$/.test(r),
+  )
   const files: DistFile[] = []
   for (const rel of rels) {
     const buf = readFileSync(path.join(distDir, rel))
     files.push({ rel, bytes: buf.byteLength, gzip: gzipBytes(buf), brotli: brotliBytes(buf) })
   }
-  // Source maps are not shipped to players; report them but exclude from totals.
-  const shipped = files.filter((f) => !f.rel.endsWith('.map'))
+
+  const manifest = readViteManifest(distDir)
+  const jsFiles = files.filter((f) => f.rel.endsWith('.js'))
+
+  let initial: DistFile[]
+  let deferred: DistFile[]
+  if (manifest) {
+    const initialSet = computeInitialFiles(manifest)
+    initial = jsFiles.filter((f) => initialSet.has(f.rel))
+    deferred = jsFiles.filter((f) => !initialSet.has(f.rel))
+  } else {
+    // No manifest: treat every JS as initial. The 300 KiB budget then covers
+    // everything, so a missing manifest can't silently excuse a big lazy chunk.
+    // Set `build.manifest: true` in apps/player/vite.config.ts for the split.
+    initial = jsFiles
+    deferred = []
+  }
+
+  const wasmFiles = files.filter((f) => /\.(wasm|onnx)$/i.test(f.rel))
+  const codeFiles = files.filter((f) => !/\.(wasm|onnx)$/i.test(f.rel))
+
   return {
     distDir,
     files,
-    jsGzip: shipped.filter((f) => f.rel.endsWith('.js')).reduce((a, f) => a + f.gzip, 0),
-    totalGzip: shipped.reduce((a, f) => a + f.gzip, 0),
+    initial,
+    deferred,
+    jsGzip: jsFiles.reduce((a, f) => a + f.gzip, 0),
+    jsInitialGzip: initial.reduce((a, f) => a + f.gzip, 0),
+    jsDeferredGzip: deferred.reduce((a, f) => a + f.gzip, 0),
+    wasmGzip: wasmFiles.reduce((a, f) => a + f.gzip, 0),
+    totalGzip: codeFiles.reduce((a, f) => a + f.gzip, 0),
+    manifestFound: manifest !== null,
   }
 }
 
@@ -312,23 +408,36 @@ export function checkBudgets(report: SizeReport, budgets: Budgets): Violation[] 
 
   if (report.player) {
     const p = report.player
-    if (p.jsGzip > budgets.playerJsGzipBytes) {
+    if (p.jsInitialGzip > budgets.playerInitialJsGzipBytes) {
       v.push({
-        id: 'player.js',
+        id: 'player.initial',
         subject: p.distDir,
-        actual: p.jsGzip,
-        limit: budgets.playerJsGzipBytes,
-        message: `player JS ${formatBytes(p.jsGzip)} gzip > ${formatBytes(budgets.playerJsGzipBytes)}`,
+        actual: p.jsInitialGzip,
+        limit: budgets.playerInitialJsGzipBytes,
+        message: `initial JS ${formatBytes(p.jsInitialGzip)} gzip > ${formatBytes(budgets.playerInitialJsGzipBytes)}`,
       })
     }
-    for (const f of p.files) {
-      if (!f.rel.endsWith('.js') || f.gzip <= budgets.playerChunkGzipBytes) continue
+    for (const f of p.deferred) {
+      if (f.gzip <= budgets.playerDeferredChunkGzipBytes) continue
       v.push({
-        id: 'player.chunk',
+        id: 'player.deferredChunk',
         subject: f.rel,
         actual: f.gzip,
-        limit: budgets.playerChunkGzipBytes,
-        message: `chunk ${f.rel}: ${formatBytes(f.gzip)} gzip > ${formatBytes(budgets.playerChunkGzipBytes)}`,
+        limit: budgets.playerDeferredChunkGzipBytes,
+        message: `deferred chunk ${f.rel}: ${formatBytes(f.gzip)} gzip > ${formatBytes(budgets.playerDeferredChunkGzipBytes)}`,
+      })
+    }
+    if (p.wasmGzip > budgets.playerRuntimeWasmGzipBytes) {
+      v.push({
+        id: 'player.wasm',
+        subject: p.distDir,
+        actual: p.wasmGzip,
+        limit: budgets.playerRuntimeWasmGzipBytes,
+        message:
+          `runtime WASM/models ${formatBytes(p.wasmGzip)} gzip > ${formatBytes(budgets.playerRuntimeWasmGzipBytes)}` +
+          (budgets.playerRuntimeWasmGzipBytes === 0
+            ? ' (Phase One forbids runtime WASM; a nonzero budget needs a spec decision)'
+            : ''),
       })
     }
     if (p.totalGzip > budgets.playerDistGzipBytes) {
@@ -439,11 +548,27 @@ export function renderMarkdown(report: SizeReport, budgets: Budgets, violations:
     L.push('_Player dist not measured._')
   } else {
     const p = report.player
-    L.push(`Total JS (gzip): **${formatBytes(p.jsGzip)}** / ${formatBytes(budgets.playerJsGzipBytes)} — ${status(p.jsGzip, budgets.playerJsGzipBytes)}`)
+    L.push(`Initial JS (gzip): **${formatBytes(p.jsInitialGzip)}** / ${formatBytes(budgets.playerInitialJsGzipBytes)} — ${status(p.jsInitialGzip, budgets.playerInitialJsGzipBytes)}`)
     L.push('')
-    L.push(`Total dist (gzip, excluding .map): **${formatBytes(p.totalGzip)}** / ${formatBytes(budgets.playerDistGzipBytes)} — ${status(p.totalGzip, budgets.playerDistGzipBytes)}`)
+    if (p.deferred.length > 0) {
+      L.push(`Deferred JS: ${p.deferred.length} chunk${p.deferred.length === 1 ? '' : 's'}, **${formatBytes(p.jsDeferredGzip)}** gzip total`)
+      L.push('')
+      L.push('| Deferred chunk | gzip | per-chunk budget | Status |')
+      L.push('|---|---:|---:|---:|')
+      for (const f of p.deferred) {
+        L.push(`| \`${f.rel}\` | ${formatBytes(f.gzip)} | ${formatBytes(budgets.playerDeferredChunkGzipBytes)} | ${status(f.gzip, budgets.playerDeferredChunkGzipBytes)} |`)
+      }
+      L.push('')
+    }
+    L.push(`Runtime WASM/models (gzip): **${formatBytes(p.wasmGzip)}** / ${formatBytes(budgets.playerRuntimeWasmGzipBytes)} — ${status(p.wasmGzip, budgets.playerRuntimeWasmGzipBytes)}`)
     L.push('')
-    const top = [...p.files].filter((f) => !f.rel.endsWith('.map')).sort((a, b) => b.gzip - a.gzip).slice(0, 12)
+    L.push(`Total dist (gzip, excl. .map and runtime WASM): **${formatBytes(p.totalGzip)}** / ${formatBytes(budgets.playerDistGzipBytes)} — ${status(p.totalGzip, budgets.playerDistGzipBytes)}`)
+    if (!p.manifestFound) {
+      L.push('')
+      L.push('> ⚠️ No Vite manifest found — every JS file was classified as initial. Set `build.manifest: true` in `apps/player/vite.config.ts` for an accurate initial/deferred split.')
+    }
+    L.push('')
+    const top = [...p.files].sort((a, b) => b.gzip - a.gzip).slice(0, 12)
     L.push('| File | Raw | gzip | brotli |')
     L.push('|---|---:|---:|---:|')
     for (const f of top) L.push(`| \`${f.rel}\` | ${formatBytes(f.bytes)} | ${formatBytes(f.gzip)} | ${formatBytes(f.brotli)} |`)
@@ -560,9 +685,12 @@ export function main(argv: string[], cwd: string): number {
       for (const n of w.notes) console.log(`  · ${n}`)
     }
     if (report.player) {
+      const p = report.player
       console.log(
-        `player JS: ${formatBytes(report.player.jsGzip)} gzip / ${formatBytes(budgets.playerJsGzipBytes)}` +
-          `  ·  dist: ${formatBytes(report.player.totalGzip)} gzip`,
+        `player JS: initial ${formatBytes(p.jsInitialGzip)} / ${formatBytes(budgets.playerInitialJsGzipBytes)}` +
+          `  ·  deferred ${formatBytes(p.jsDeferredGzip)} in ${p.deferred.length} chunk(s)` +
+          `  ·  wasm ${formatBytes(p.wasmGzip)} / ${formatBytes(budgets.playerRuntimeWasmGzipBytes)}` +
+          `  ·  dist ${formatBytes(p.totalGzip)} gzip`,
       )
     }
     for (const w of report.warnings) console.log(`warning: ${w}`)

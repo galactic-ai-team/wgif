@@ -1,11 +1,13 @@
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { existsSync, readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import {
   checkBudgets,
+  computeInitialFiles,
   formatBytes,
+  measurePlayer,
   measureWorld,
   parseArgs,
   readZipDirectory,
@@ -71,14 +73,15 @@ function makeStoredZip(entries: { name: string; data: Uint8Array }[]): Uint8Arra
 }
 
 const BUDGETS: Budgets = {
-  version: 1,
+  version: 2,
   worldTotalBytes: 1024,
   worldMaxEntries: 8,
   worldEntryBytes: { 'preview.png': 256 },
   worldEntryDefaultBytes: 512,
-  playerJsGzipBytes: 1024,
-  playerChunkGzipBytes: 512,
+  playerInitialJsGzipBytes: 1024,
+  playerDeferredChunkGzipBytes: 512,
   playerDistGzipBytes: 4096,
+  playerRuntimeWasmGzipBytes: 0,
 }
 
 describe('formatBytes', () => {
@@ -159,18 +162,124 @@ describe('checkBudgets', () => {
     expect(ids).toContain('world.entry:world.glb')
   })
 
-  it('flags player JS and oversized chunks', () => {
+  it('flags initial JS over budget', () => {
     const report = base({
       player: {
         distDir: 'apps/player/dist',
+        files: [],
+        initial: [{ rel: 'assets/index-abc.js', bytes: 9000, gzip: 2048, brotli: 1500 }],
+        deferred: [],
         jsGzip: 2048,
+        jsInitialGzip: 2048,
+        jsDeferredGzip: 0,
+        wasmGzip: 0,
         totalGzip: 2048,
-        files: [{ rel: 'assets/index-abc.js', bytes: 9000, gzip: 2048, brotli: 1500 }],
+        manifestFound: true,
       },
     })
     const ids = checkBudgets(report, BUDGETS).map((v) => v.id)
-    expect(ids).toContain('player.js')
-    expect(ids).toContain('player.chunk')
+    expect(ids).toContain('player.initial')
+    expect(ids).not.toContain('player.deferredChunk')
+  })
+
+  it('flags a deferred chunk over its per-chunk budget', () => {
+    const report = base({
+      player: {
+        distDir: 'apps/player/dist',
+        files: [],
+        initial: [],
+        deferred: [{ rel: 'assets/lazy-xyz.js', bytes: 4000, gzip: 900, brotli: 800 }],
+        jsGzip: 900,
+        jsInitialGzip: 0,
+        jsDeferredGzip: 900,
+        wasmGzip: 0,
+        totalGzip: 900,
+        manifestFound: true,
+      },
+    })
+    const ids = checkBudgets(report, BUDGETS).map((v) => v.id)
+    expect(ids).toContain('player.deferredChunk')
+    expect(ids).not.toContain('player.initial')
+  })
+
+  it('flags runtime WASM under a 0-byte Phase One budget', () => {
+    const report = base({
+      player: {
+        distDir: 'apps/player/dist',
+        files: [],
+        initial: [],
+        deferred: [],
+        jsGzip: 0,
+        jsInitialGzip: 0,
+        jsDeferredGzip: 0,
+        wasmGzip: 5000,
+        totalGzip: 0,
+        manifestFound: true,
+      },
+    })
+    const ids = checkBudgets(report, BUDGETS).map((v) => v.id)
+    expect(ids).toContain('player.wasm')
+  })
+})
+
+describe('computeInitialFiles', () => {
+  it('follows static imports, not dynamic imports', () => {
+    const initial = computeInitialFiles({
+      'index.html': {
+        file: 'assets/index-abc.js',
+        isEntry: true,
+        imports: ['_shared.js'],
+        dynamicImports: ['src/lazy.ts'],
+      },
+      '_shared.js': { file: 'assets/shared-xyz.js' },
+      'src/lazy.ts': { file: 'assets/lazy-xyz.js', isDynamicEntry: true },
+    })
+    expect([...initial].sort()).toEqual(['assets/index-abc.js', 'assets/shared-xyz.js'])
+    expect(initial.has('assets/lazy-xyz.js')).toBe(false)
+  })
+})
+
+describe('measurePlayer', () => {
+  it('separates initial and deferred JS via the Vite manifest', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'wgif-dist-'))
+    mkdirSync(path.join(dir, '.vite'), { recursive: true })
+    mkdirSync(path.join(dir, 'assets'), { recursive: true })
+    writeFileSync(
+      path.join(dir, '.vite', 'manifest.json'),
+      JSON.stringify({
+        'index.html': {
+          file: 'assets/index-abc.js',
+          isEntry: true,
+          imports: ['_shared.js'],
+          dynamicImports: ['src/lazy.ts'],
+        },
+        '_shared.js': { file: 'assets/shared-xyz.js' },
+        'src/lazy.ts': { file: 'assets/lazy-xyz.js', isDynamicEntry: true },
+      }),
+    )
+    writeFileSync(path.join(dir, 'assets', 'index-abc.js'), 'const a=1;'.repeat(100))
+    writeFileSync(path.join(dir, 'assets', 'shared-xyz.js'), 'const b=2;'.repeat(50))
+    writeFileSync(path.join(dir, 'assets', 'lazy-xyz.js'), 'const c=3;'.repeat(200))
+    const p = measurePlayer(dir)
+    expect(p).not.toBeNull()
+    expect(p!.manifestFound).toBe(true)
+    expect(p!.initial.map((f) => f.rel).sort()).toEqual([
+      'assets/index-abc.js',
+      'assets/shared-xyz.js',
+    ])
+    expect(p!.deferred.map((f) => f.rel)).toEqual(['assets/lazy-xyz.js'])
+    expect(p!.jsInitialGzip + p!.jsDeferredGzip).toBe(p!.jsGzip)
+  })
+
+  it('falls back to "all JS is initial" when the manifest is absent', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'wgif-dist-nomanifest-'))
+    mkdirSync(path.join(dir, 'assets'), { recursive: true })
+    writeFileSync(path.join(dir, 'assets', 'index-abc.js'), 'const a=1;')
+    const p = measurePlayer(dir)
+    expect(p).not.toBeNull()
+    expect(p!.manifestFound).toBe(false)
+    expect(p!.initial.map((f) => f.rel)).toEqual(['assets/index-abc.js'])
+    expect(p!.deferred).toEqual([])
   })
 })
 

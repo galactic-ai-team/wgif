@@ -26,12 +26,35 @@ Change a budget in one place: the JSON.
 | `interactions.json`, `game-state.json` | 32 KiB each | — | — |
 | any other entry | 256 KiB | — | — |
 | entries per world | 256 | — | — |
-| **player JS, total gzip** | **300 KiB** | ~207 KiB | 1.45× |
-| any single JS chunk gzip | 256 KiB | — | — |
-| player dist total gzip (excl. `.map`) | 1.5 MiB | — | — |
+| **player JS, initial (entry graph) gzip** | **300 KiB** | ~207 KiB | 1.45× |
+| any single **deferred** JS chunk gzip | 512 KiB | — | — |
+| runtime WASM/models gzip (Phase One) | **0 B** | 0 B | — |
+| player dist total gzip (excl. `.map` and runtime WASM) | 1.5 MiB | — | — |
 
 Unknown entry names fall back to the 256 KiB default, so a new asset type
 cannot sneak in unbounded.
+
+### Initial vs deferred
+
+"Initial" means every JS file reachable from the app entry through Vite's
+static `imports` graph — what the browser must parse before the first frame.
+"Deferred" means everything only reachable via `dynamicImports`. The split is
+read from `apps/player/dist/.vite/manifest.json` (Vite 5) or
+`apps/player/dist/manifest.json` (Vite 4); `build.manifest: true` in
+`apps/player/vite.config.ts` is required to get it. If the manifest is
+missing, every JS file is treated as initial — a lazy chunk cannot escape the
+300 KiB budget by staying unclassified.
+
+Why two numbers:
+
+- The **300 KiB initial** budget is what a user pays to open the player at
+  all. It is small on purpose and applies to every world.
+- The **512 KiB per-deferred-chunk** budget is what a user pays *once* to
+  unlock an optional feature (an ONNX runtime, a heavier codec). A world that
+  doesn't need it never downloads it.
+- **0 B runtime WASM** in Phase One keeps "open a `.wgif` and it just works"
+  honest: no headers, no MIME plumbing, no COOP/COEP, no 10 MiB fetch on a
+  phone in a parking lot.
 
 ## Time budgets (measured manually, see `docs/PERF.md`)
 
@@ -83,5 +106,6 @@ while landing a known-large change, and flip it back in the same PR).
 |---|---|
 | `world.glb` | quantize + meshopt (see `docs/ASSET-COMPRESSION.md`) |
 | `preview.png` | resize to ≤ 1024², re-encode; consider WebP |
-| player JS total | check the biggest chunk in the report; usually ajv, or a lazy dependency imported eagerly |
-| a single chunk | split it — anything not needed for first frame belongs behind `import()` |
+| player **initial** JS | check the biggest initial chunk in the report; usually ajv, or a lazy dependency imported eagerly. Move it behind `import()` — it becomes deferred and stops counting against 300 KiB |
+| a single deferred chunk | if it exceeds 512 KiB, check whether the same file is also being pulled into the initial graph. If it is, split the shared code out before the lazy chunk grows further |
+| runtime WASM/models | Phase One forbids this outright. Either drop the feature or propose a Phase Two budget line and get it approved; do not just bump the number |
