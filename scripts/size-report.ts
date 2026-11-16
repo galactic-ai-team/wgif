@@ -49,10 +49,32 @@ import {
 // budgets
 // ---------------------------------------------------------------------------
 
+/**
+ * docs/spec/wgif-v0.1.md §2 reader safety ceilings + §6 model cap.
+ * A violation here is a spec MUST: a compliant reader refuses the world.
+ */
+export interface SpecLimits {
+  /** §2 ZIP entries, including manifest.json. */
+  maxZipEntries: number
+  /** §2 uncompressed bytes per entry. */
+  maxEntryUncompressedBytes: number
+  /** §2 combined uncompressed ZIP bytes. */
+  maxCombinedUncompressedBytes: number
+  /** §2 uncompressed manifest.json. */
+  maxManifestUncompressedBytes: number
+  /** §2 each referenced declarative JSON payload (interactions.json, game-state.json, …). */
+  maxDeclarativeJsonUncompressedBytes: number
+  /** §6 each unpacked model under models/. */
+  maxModelUncompressedBytes: number
+}
+
+/**
+ * Phase One targets from docs/BUDGETS.md. Over-target is spec-valid but
+ * heavier than we want to ship — the report labels these as SHOULDs.
+ */
 export interface Budgets {
   version: number
   worldTotalBytes: number
-  worldMaxEntries: number
   worldEntryBytes: Record<string, number>
   worldEntryDefaultBytes: number
   playerInitialJsGzipBytes: number
@@ -60,6 +82,7 @@ export interface Budgets {
   playerDistGzipBytes: number
   playerRuntimeWasmGzipBytes: number
   renderBudget: RenderBudget
+  specLimits: SpecLimits
 }
 
 export function loadBudgets(absPath: string): Budgets {
@@ -317,12 +340,19 @@ export interface PlayerReport {
   manifestFound: boolean
 }
 
+export type ViolationSeverity = 'spec' | 'phase-one'
+
 export interface Violation {
   id: string
   subject: string
   actual: number
   limit: number
   message: string
+  /**
+   * 'spec'      = MUST in docs/spec/wgif-v0.1.md. A reader refuses the world.
+   * 'phase-one' = SHOULD in docs/BUDGETS.md. Spec-valid, over Phase One target.
+   */
+  severity: ViolationSeverity
 }
 
 export interface SizeReport {
@@ -457,7 +487,101 @@ export function locateGlb(root: string): LocatedGlb | null {
 // budget checks
 // ---------------------------------------------------------------------------
 
-export function checkBudgets(report: SizeReport, budgets: Budgets): Violation[] {
+/**
+ * Spec MUST checks: docs/spec/wgif-v0.1.md §2 + §6. A violation here means a
+ * compliant reader refuses the world. Run on every `.wgif` in the repo.
+ */
+export function checkSpecLimits(report: SizeReport, limits: SpecLimits): Violation[] {
+  const v: Violation[] = []
+
+  for (const w of report.worlds) {
+    if (w.entries.length > limits.maxZipEntries) {
+      v.push({
+        id: 'spec.entries',
+        subject: w.path,
+        actual: w.entries.length,
+        limit: limits.maxZipEntries,
+        severity: 'spec',
+        message: `${w.path}: ${w.entries.length} ZIP entries > spec ceiling ${limits.maxZipEntries} (§2)`,
+      })
+    }
+
+    for (const e of w.entries) {
+      if (e.expandedBytes > limits.maxEntryUncompressedBytes) {
+        v.push({
+          id: `spec.entry:${e.name}`,
+          subject: w.path,
+          actual: e.expandedBytes,
+          limit: limits.maxEntryUncompressedBytes,
+          severity: 'spec',
+          message: `${w.path} → ${e.name}: ${formatBytes(e.expandedBytes)} > spec per-entry ceiling ${formatBytes(limits.maxEntryUncompressedBytes)} (§2)`,
+        })
+      }
+    }
+
+    const combined = w.entries.reduce((a, e) => a + e.expandedBytes, 0)
+    if (combined > limits.maxCombinedUncompressedBytes) {
+      v.push({
+        id: 'spec.combined',
+        subject: w.path,
+        actual: combined,
+        limit: limits.maxCombinedUncompressedBytes,
+        severity: 'spec',
+        message: `${w.path}: combined ${formatBytes(combined)} > spec ceiling ${formatBytes(limits.maxCombinedUncompressedBytes)} (§2)`,
+      })
+    }
+
+    const manifest = w.entries.find((e) => e.name === 'manifest.json')
+    if (manifest && manifest.expandedBytes > limits.maxManifestUncompressedBytes) {
+      v.push({
+        id: 'spec.manifest',
+        subject: w.path,
+        actual: manifest.expandedBytes,
+        limit: limits.maxManifestUncompressedBytes,
+        severity: 'spec',
+        message: `${w.path} → manifest.json: ${formatBytes(manifest.expandedBytes)} > spec ceiling ${formatBytes(limits.maxManifestUncompressedBytes)} (§2)`,
+      })
+    }
+
+    for (const e of w.entries) {
+      if (e.name === 'manifest.json') continue
+      if (e.name.startsWith('models/')) continue  // handled by model check below
+      if (!e.name.endsWith('.json')) continue
+      if (e.expandedBytes > limits.maxDeclarativeJsonUncompressedBytes) {
+        v.push({
+          id: `spec.json:${e.name}`,
+          subject: w.path,
+          actual: e.expandedBytes,
+          limit: limits.maxDeclarativeJsonUncompressedBytes,
+          severity: 'spec',
+          message: `${w.path} → ${e.name}: ${formatBytes(e.expandedBytes)} > spec declarative-JSON ceiling ${formatBytes(limits.maxDeclarativeJsonUncompressedBytes)} (§2)`,
+        })
+      }
+    }
+
+    for (const e of w.entries) {
+      if (!e.name.startsWith('models/')) continue
+      if (e.expandedBytes > limits.maxModelUncompressedBytes) {
+        v.push({
+          id: `spec.model:${e.name}`,
+          subject: w.path,
+          actual: e.expandedBytes,
+          limit: limits.maxModelUncompressedBytes,
+          severity: 'spec',
+          message: `${w.path} → ${e.name}: ${formatBytes(e.expandedBytes)} > spec model ceiling ${formatBytes(limits.maxModelUncompressedBytes)} (§6)`,
+        })
+      }
+    }
+  }
+
+  return v
+}
+
+/**
+ * Phase One target checks: docs/BUDGETS.md. Over-target is spec-valid but
+ * heavier than we want to ship; the report labels these SHOULDs.
+ */
+export function checkPhaseOneBudgets(report: SizeReport, budgets: Budgets): Violation[] {
   const v: Violation[] = []
 
   for (const w of report.worlds) {
@@ -467,18 +591,11 @@ export function checkBudgets(report: SizeReport, budgets: Budgets): Violation[] 
         subject: w.path,
         actual: w.totalBytes,
         limit: budgets.worldTotalBytes,
-        message: `${w.path}: ${formatBytes(w.totalBytes)} > ${formatBytes(budgets.worldTotalBytes)}`,
+        severity: 'phase-one',
+        message: `${w.path}: ${formatBytes(w.totalBytes)} > Phase One target ${formatBytes(budgets.worldTotalBytes)}`,
       })
     }
-    if (w.entries.length > budgets.worldMaxEntries) {
-      v.push({
-        id: 'world.entries',
-        subject: w.path,
-        actual: w.entries.length,
-        limit: budgets.worldMaxEntries,
-        message: `${w.path}: ${w.entries.length} entries > ${budgets.worldMaxEntries}`,
-      })
-    }
+    // Entry-count is spec §2 exactly, checked in checkSpecLimits.
     for (const e of w.entries) {
       const limit = budgets.worldEntryBytes[e.name] ?? budgets.worldEntryDefaultBytes
       if (e.expandedBytes > limit) {
@@ -487,7 +604,8 @@ export function checkBudgets(report: SizeReport, budgets: Budgets): Violation[] 
           subject: w.path,
           actual: e.expandedBytes,
           limit,
-          message: `${w.path} → ${e.name}: ${formatBytes(e.expandedBytes)} > ${formatBytes(limit)}`,
+          severity: 'phase-one',
+          message: `${w.path} → ${e.name}: ${formatBytes(e.expandedBytes)} > Phase One target ${formatBytes(limit)}`,
         })
       }
     }
@@ -501,6 +619,7 @@ export function checkBudgets(report: SizeReport, budgets: Budgets): Violation[] 
         subject: p.distDir,
         actual: p.jsInitialGzip,
         limit: budgets.playerInitialJsGzipBytes,
+        severity: 'phase-one',
         message: `initial JS ${formatBytes(p.jsInitialGzip)} gzip > ${formatBytes(budgets.playerInitialJsGzipBytes)}`,
       })
     }
@@ -511,6 +630,7 @@ export function checkBudgets(report: SizeReport, budgets: Budgets): Violation[] 
         subject: f.rel,
         actual: f.gzip,
         limit: budgets.playerDeferredChunkGzipBytes,
+        severity: 'phase-one',
         message: `deferred chunk ${f.rel}: ${formatBytes(f.gzip)} gzip > ${formatBytes(budgets.playerDeferredChunkGzipBytes)}`,
       })
     }
@@ -520,6 +640,7 @@ export function checkBudgets(report: SizeReport, budgets: Budgets): Violation[] 
         subject: p.distDir,
         actual: p.wasmGzip,
         limit: budgets.playerRuntimeWasmGzipBytes,
+        severity: 'phase-one',
         message:
           `runtime WASM/models ${formatBytes(p.wasmGzip)} gzip > ${formatBytes(budgets.playerRuntimeWasmGzipBytes)}` +
           (budgets.playerRuntimeWasmGzipBytes === 0
@@ -533,16 +654,27 @@ export function checkBudgets(report: SizeReport, budgets: Budgets): Violation[] 
         subject: p.distDir,
         actual: p.totalGzip,
         limit: budgets.playerDistGzipBytes,
+        severity: 'phase-one',
         message: `player dist ${formatBytes(p.totalGzip)} gzip > ${formatBytes(budgets.playerDistGzipBytes)}`,
       })
     }
   }
 
   if (report.render) {
-    v.push(...checkRenderBudget(report.render.analysis, budgets.renderBudget, report.render.label))
+    for (const rv of checkRenderBudget(report.render.analysis, budgets.renderBudget, report.render.label)) {
+      v.push({ ...rv, severity: 'phase-one' })
+    }
   }
 
   return v
+}
+
+/**
+ * Orchestrator: spec MUSTs first, then Phase One SHOULDs. Both still fail CI.
+ * Distinguish by `Violation.severity`.
+ */
+export function checkBudgets(report: SizeReport, budgets: Budgets): Violation[] {
+  return [...checkSpecLimits(report, budgets.specLimits), ...checkPhaseOneBudgets(report, budgets)]
 }
 
 export function buildReport(opts: { root: string; dist: string; budgetsPath: string }): SizeReport {
@@ -726,14 +858,28 @@ export function renderMarkdown(report: SizeReport, budgets: Budgets, violations:
   }
 
   L.push('')
-  L.push(
-    violations.length === 0
-      ? '### ✅ All budgets met'
-      : `### ❌ ${violations.length} budget violation(s)`,
-  )
-  if (violations.length > 0) {
-    L.push('')
-    for (const x of violations) L.push(`- **${x.id}** — ${x.message}`)
+  if (violations.length === 0) {
+    L.push('### ✅ All budgets met')
+  } else {
+    const specV = violations.filter((v) => v.severity === 'spec')
+    const phaseOneV = violations.filter((v) => v.severity !== 'spec')
+    L.push(`### ❌ ${violations.length} budget violation(s)`)
+    if (specV.length > 0) {
+      L.push('')
+      L.push(`#### Spec violations (MUST) — ${specV.length}`)
+      L.push('')
+      L.push('`docs/spec/wgif-v0.1.md` §2/§6. A compliant reader refuses these worlds.')
+      L.push('')
+      for (const x of specV) L.push(`- **${x.id}** — ${x.message}`)
+    }
+    if (phaseOneV.length > 0) {
+      L.push('')
+      L.push(`#### Phase One target violations (SHOULD) — ${phaseOneV.length}`)
+      L.push('')
+      L.push('Spec-valid, but over the `docs/BUDGETS.md` Phase One optimization targets.')
+      L.push('')
+      for (const x of phaseOneV) L.push(`- **${x.id}** — ${x.message}`)
+    }
   }
   L.push('')
   return L.join('\n')
@@ -866,7 +1012,10 @@ export function main(argv: string[], cwd: string): number {
     }
     for (const w of report.warnings) console.log(`warning: ${w}`)
     console.log(violations.length === 0 ? 'all budgets met' : `${violations.length} violation(s):`)
-    for (const x of violations) console.log(`  ✗ ${x.message}`)
+    for (const x of violations) {
+      const tag = x.severity === 'spec' ? '[spec]' : '[phase-one]'
+      console.log(`  ✗ ${tag} ${x.message}`)
+    }
   }
 
   if (opts.summaryPath) {

@@ -10,6 +10,8 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import {
   checkBudgets,
+  checkPhaseOneBudgets,
+  checkSpecLimits,
   computeInitialFiles,
   formatBytes,
   measurePlayer,
@@ -19,6 +21,8 @@ import {
   renderMarkdown,
   type Budgets,
   type SizeReport,
+  type WorldReport,
+  type ZipEntry,
 } from './size-report.js'
 
 // ---------------------------------------------------------------------------
@@ -82,9 +86,8 @@ function makeStoredZip(entries: { name: string; data: Uint8Array }[]): Uint8Arra
 }
 
 const BUDGETS: Budgets = {
-  version: 3,
+  version: 4,
   worldTotalBytes: 1024,
-  worldMaxEntries: 8,
   worldEntryBytes: { 'preview.png': 256 },
   worldEntryDefaultBytes: 512,
   playerInitialJsGzipBytes: 1024,
@@ -98,7 +101,46 @@ const BUDGETS: Budgets = {
     maxTextureMemoryMiB: 4,
     targetFrameTimeMs: 16.7,
   },
+  specLimits: {
+    maxZipEntries: 8,
+    maxEntryUncompressedBytes: 2048,
+    maxCombinedUncompressedBytes: 4096,
+    maxManifestUncompressedBytes: 1024,
+    maxDeclarativeJsonUncompressedBytes: 1024,
+    maxModelUncompressedBytes: 1024,
+  },
 }
+
+// ---------------------------------------------------------------------------
+// shared fixtures for the spec/phase-one split
+// ---------------------------------------------------------------------------
+
+const makeWorld = (over: Partial<WorldReport> = {}): WorldReport => ({
+  path: 'test.wgif',
+  sha256: 'x'.repeat(64),
+  totalBytes: 100,
+  transferBytes: 100,
+  notes: [],
+  entries: [],
+  ...over,
+})
+
+const makeReport = (worlds: WorldReport[]): SizeReport => ({
+  worlds,
+  player: null,
+  render: null,
+  budgetsPath: 'scripts/size-budgets.json',
+  duplicates: [],
+  warnings: [],
+})
+
+const mkEntry = (name: string, expandedBytes: number, method: 0 | 8 = 0): ZipEntry => ({
+  name,
+  storedBytes: expandedBytes,
+  expandedBytes,
+  method,
+  zip64: false,
+})
 
 // ---------------------------------------------------------------------------
 // formatBytes
@@ -259,7 +301,7 @@ describe('checkBudgets', () => {
     expect(ids).toContain('player.wasm')
   })
 
-  it('folds render budget violations into the report', () => {
+  it('folds render budget violations into the report with phase-one severity', () => {
     const report = base({
       render: {
         label: 'court.glb',
@@ -272,13 +314,114 @@ describe('checkBudgets', () => {
         },
       },
     })
-    const ids = checkBudgets(report, BUDGETS).map((v) => v.id)
-    expect(ids).toContain('render.drawCalls')
+    const violations = checkBudgets(report, BUDGETS)
+    const renderV = violations.find((v) => v.id === 'render.drawCalls')
+    expect(renderV).toBeDefined()
+    expect(renderV?.severity).toBe('phase-one')
   })
 
   it('does not add render violations when report.render is null', () => {
     const ids = checkBudgets(base({ render: null }), BUDGETS).map((v) => v.id)
     expect(ids.filter((id) => id.startsWith('render.'))).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// checkSpecLimits — docs/spec/wgif-v0.1.md §2 + §6 (MUST, reader refuses)
+// ---------------------------------------------------------------------------
+
+describe('checkSpecLimits', () => {
+  const L = BUDGETS.specLimits
+
+  it('passes an empty report', () => {
+    expect(checkSpecLimits(makeReport([]), L)).toEqual([])
+  })
+
+  it('flags too many ZIP entries (§2)', () => {
+    const entries = Array.from({ length: L.maxZipEntries + 1 }, (_, i) => mkEntry(`f${i}.json`, 1))
+    const ids = checkSpecLimits(makeReport([makeWorld({ entries })]), L).map((v) => v.id)
+    expect(ids).toContain('spec.entries')
+  })
+
+  it('flags an entry over the per-entry uncompressed ceiling (§2)', () => {
+    const entries = [mkEntry('world.glb', L.maxEntryUncompressedBytes + 1)]
+    const ids = checkSpecLimits(makeReport([makeWorld({ entries })]), L).map((v) => v.id)
+    expect(ids).toContain('spec.entry:world.glb')
+  })
+
+  it('flags combined uncompressed bytes over the ceiling (§2)', () => {
+    const entries = [
+      mkEntry('world.glb', L.maxEntryUncompressedBytes),
+      mkEntry('preview.png', 2048),
+    ]
+    const ids = checkSpecLimits(makeReport([makeWorld({ entries })]), L).map((v) => v.id)
+    expect(ids).toContain('spec.combined')
+  })
+
+  it('flags manifest.json over the manifest ceiling (§2)', () => {
+    const entries = [mkEntry('manifest.json', L.maxManifestUncompressedBytes + 1)]
+    const ids = checkSpecLimits(makeReport([makeWorld({ entries })]), L).map((v) => v.id)
+    expect(ids).toContain('spec.manifest')
+  })
+
+  it('flags an oversized declarative JSON payload (§2)', () => {
+    const entries = [mkEntry('interactions.json', L.maxDeclarativeJsonUncompressedBytes + 1)]
+    const ids = checkSpecLimits(makeReport([makeWorld({ entries })]), L).map((v) => v.id)
+    expect(ids).toContain('spec.json:interactions.json')
+  })
+
+  it('flags a model over 1 MiB under models/ (§6)', () => {
+    const entries = [mkEntry('models/rebounder.onnx', L.maxModelUncompressedBytes + 1)]
+    const ids = checkSpecLimits(makeReport([makeWorld({ entries })]), L).map((v) => v.id)
+    expect(ids).toContain('spec.model:models/rebounder.onnx')
+  })
+
+  it('does not double-report manifest.json as a declarative JSON payload', () => {
+    const entries = [mkEntry('manifest.json', L.maxDeclarativeJsonUncompressedBytes + 1)]
+    const ids = checkSpecLimits(makeReport([makeWorld({ entries })]), L).map((v) => v.id)
+    expect(ids.some((id) => id.startsWith('spec.json:manifest'))).toBe(false)
+  })
+
+  it('does not flag models/ entries as declarative JSON', () => {
+    const entries = [mkEntry('models/weights.json', L.maxDeclarativeJsonUncompressedBytes + 1)]
+    const ids = checkSpecLimits(makeReport([makeWorld({ entries })]), L).map((v) => v.id)
+    expect(ids.some((id) => id.startsWith('spec.json:models'))).toBe(false)
+  })
+
+  it('tags every violation with severity "spec"', () => {
+    const entries = [mkEntry('manifest.json', L.maxManifestUncompressedBytes + 1)]
+    const violations = checkSpecLimits(makeReport([makeWorld({ entries })]), L)
+    expect(violations.length).toBeGreaterThan(0)
+    expect(violations.every((v) => v.severity === 'spec')).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// checkPhaseOneBudgets — docs/BUDGETS.md (SHOULD, optimization targets)
+// ---------------------------------------------------------------------------
+
+describe('checkPhaseOneBudgets', () => {
+  it('passes an empty report', () => {
+    expect(checkPhaseOneBudgets(makeReport([]), BUDGETS)).toEqual([])
+  })
+
+  it('flags a world over the Phase One total target', () => {
+    const w = makeWorld({ totalBytes: BUDGETS.worldTotalBytes + 1 })
+    const ids = checkPhaseOneBudgets(makeReport([w]), BUDGETS).map((v) => v.id)
+    expect(ids).toContain('world.total')
+  })
+
+  it('does not flag entry count — that is a spec check, not a Phase One one', () => {
+    const entries = Array.from({ length: 9 }, (_, i) => mkEntry(`f${i}.json`, 1))
+    const ids = checkPhaseOneBudgets(makeReport([makeWorld({ entries })]), BUDGETS).map((v) => v.id)
+    expect(ids.filter((id) => id === 'world.entries')).toEqual([])
+  })
+
+  it('tags every violation with severity "phase-one"', () => {
+    const w = makeWorld({ totalBytes: BUDGETS.worldTotalBytes + 1 })
+    const violations = checkPhaseOneBudgets(makeReport([w]), BUDGETS)
+    expect(violations.length).toBeGreaterThan(0)
+    expect(violations.every((v) => v.severity === 'phase-one')).toBe(true)
   })
 })
 

@@ -1,8 +1,7 @@
 {
   "$comment": "Single source of truth for Phase One size budgets. Human-readable mirror: docs/BUDGETS.md. Bytes unless stated. Changing a number here changes CI.",
-  "version": 3,
+  "version": 4,
   "worldTotalBytes": 1048576,
-  "worldMaxEntries": 256,
   "worldEntryBytes": {
     "manifest.json": 16384,
     "preview.png": 262144,
@@ -21,5 +20,14 @@
     "maxTriangles": 150000,
     "maxTextureMemoryMiB": 32,
     "targetFrameTimeMs": 16.7
+  },
+  "specLimits": {
+    "$comment": "Mirrors docs/spec/wgif-v0.1.md §2 reader safety ceilings and §6 model cap. Violations of these are spec MUSTs — a compliant reader refuses the world.",
+    "maxZipEntries": 256,
+    "maxEntryUncompressedBytes": 16777216,
+    "maxCombinedUncompressedBytes": 67108864,
+    "maxManifestUncompressedBytes": 1048576,
+    "maxDeclarativeJsonUncompressedBytes": 1048576,
+    "maxModelUncompressedBytes": 1048576
   }
 }
