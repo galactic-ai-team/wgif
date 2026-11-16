@@ -5,30 +5,39 @@ import { createHash } from 'node:crypto';
 import { buildCourtGlb, generateOrbitPreviewGif } from './court-builder.js';
 import { crc32, zlibCompressDeterministic } from './prng.js';
 
-export interface SpecV01Manifest {
-  wgif_version: '0.1';
+export interface Rc1FileEntry {
+  path: string;
+  sha256: string;
+  bytes: number;
+  mime?: string;
+}
+
+export interface Rc1Manifest {
+  wgif: '0.1';
   id: string;
   title: string;
-  description: string;
-  created_at: string;
-  license: string;
-  entrypoints: {
+  description?: string;
+  creator: string;
+  created: string;
+  license?: string;
+  mode: 'walk' | 'orbit';
+  entry: {
     scene: string;
     preview: string;
   };
-  camera: {
-    default_mode: 'walk' | 'orbit';
+  files: Rc1FileEntry[];
+  camera?: {
     spawn: {
       position: [number, number, number];
       target: [number, number, number];
       fov_deg: number;
     };
-    bounds: {
+    bounds?: {
       min: [number, number, number];
       max: [number, number, number];
     };
   };
-  provenance: {
+  provenance?: {
     origin: 'procedural' | 'image-to-world' | 'handcrafted';
     generator: {
       name: string;
@@ -46,15 +55,11 @@ export interface SpecV01Manifest {
       sha256: string;
       dimensions: [number, number];
     }>;
-    assets: Array<{
-      path: string;
-      sha256: string;
-    }>;
   };
 }
 
 export interface CourtBundleArtifacts {
-  manifest: SpecV01Manifest;
+  manifest: Rc1Manifest;
   manifestJson: string;
   sceneGlb: Uint8Array;
   previewGif: Uint8Array;
@@ -64,37 +69,54 @@ export interface CourtBundleArtifacts {
   sha256Wgif: string;
 }
 
+export interface ZipInputEntry {
+  path: string;
+  data: Uint8Array;
+  store?: boolean;
+}
+
 /**
- * Deterministic ZIP container packer for `.wgif` archives.
- * Uses fixed DOS timestamp (1980-01-01 00:00:00) and sorted entry order:
- *   1. manifest.json
- *   2. preview.gif
- *   3. scene/*.glb
+ * Deterministic RC1 ZIP container packer for `.wgif` archives.
+ * - Guarantees `manifest.json` is ALWAYS the FIRST entry (index 0) and STORED (method 0, no deflate).
+ * - Remaining entries are sorted lexicographically with fixed DOS timestamp (1980-01-01 00:00:00).
  */
-export function packDeterministicWgifZip(
-  files: Array<{ path: string; data: Uint8Array }>
-): Uint8Array {
+export function packDeterministicWgifZip(files: ZipInputEntry[]): Uint8Array {
+  const ordered = [...files].sort((a, b) => {
+    if (a.path === 'manifest.json') return -1;
+    if (b.path === 'manifest.json') return 1;
+    return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+  });
+
   const localHeaders: Uint8Array[] = [];
   const centralHeaders: Uint8Array[] = [];
   let localOffset = 0;
 
-  for (const file of files) {
+  for (const file of ordered) {
     const nameBytes = new TextEncoder().encode(file.path);
     const uncompressedCrc = crc32(file.data);
-    // Strip 2-byte ZLIB header and 4-byte Adler32 trailer to get raw RFC 1951 DEFLATE stream
-    const zlibStream = zlibCompressDeterministic(file.data);
-    const deflated = zlibStream.subarray(2, zlibStream.length - 4);
 
-    const useStore = deflated.length >= file.data.length;
-    const payload = useStore ? file.data : deflated;
-    const method = useStore ? 0 : 8;
+    // RC1 requirement: manifest.json (or any entry with store: true) MUST be STORED (method 0)
+    const forceStore = file.path === 'manifest.json' || file.store === true;
+
+    let payload = file.data;
+    let method = 0;
+
+    if (!forceStore) {
+      // Strip 2-byte ZLIB header and 4-byte Adler32 trailer to get raw RFC 1951 DEFLATE stream
+      const zlibStream = zlibCompressDeterministic(file.data);
+      const deflated = zlibStream.subarray(2, zlibStream.length - 4);
+      if (deflated.length < file.data.length) {
+        payload = deflated;
+        method = 8;
+      }
+    }
 
     const local = new Uint8Array(30 + nameBytes.length + payload.length);
     const lv = new DataView(local.buffer);
     lv.setUint32(0, 0x04034b50, true); // Local file header signature
     lv.setUint16(4, 20, true); // Version needed (2.0)
     lv.setUint16(6, 0, true); // Flags
-    lv.setUint16(8, method, true); // Compression method
+    lv.setUint16(8, method, true); // Compression method (0 = STORED, 8 = DEFLATED)
     lv.setUint16(10, 0, true); // Fixed DOS time 00:00:00
     lv.setUint16(12, 0x0021, true); // Fixed DOS date 1980-01-01
     lv.setUint32(14, uncompressedCrc, true);
@@ -139,8 +161,8 @@ export function packDeterministicWgifZip(
   ev.setUint32(0, 0x06054b50, true);
   ev.setUint16(4, 0, true);
   ev.setUint16(6, 0, true);
-  ev.setUint16(8, files.length, true);
-  ev.setUint16(10, files.length, true);
+  ev.setUint16(8, ordered.length, true);
+  ev.setUint16(10, ordered.length, true);
   ev.setUint32(12, cdSize, true);
   ev.setUint32(16, localOffset, true);
   ev.setUint16(20, 0, true);
@@ -166,20 +188,35 @@ export function buildReproducibleCourtArtifacts(): CourtBundleArtifacts {
   const sha256Scene = createHash('sha256').update(sceneGlb).digest('hex');
   const sha256Preview = createHash('sha256').update(previewGif).digest('hex');
 
-  const manifest: SpecV01Manifest = {
-    wgif_version: '0.1',
+  const manifest: Rc1Manifest = {
+    wgif: '0.1',
     id: 'urn:wgif:galactic-ai:examples:court-v1',
     title: 'Galactic Hardwood Arena (Procedural Phase 1)',
     description:
       'Handcrafted deterministic 3D basketball court with procedural maple planks, regulation lines, tapered diamond rim nets, arena walls, and stadium lights.',
-    created_at: '2026-01-01T00:00:00.000Z',
+    creator: 'Galactic AI Team (@wgif/court-builder)',
+    created: '2026-01-01T00:00:00.000Z',
     license: 'MIT',
-    entrypoints: {
+    mode: 'walk',
+    entry: {
       scene: 'scene/court.glb',
       preview: 'preview.gif',
     },
+    files: [
+      {
+        path: 'preview.gif',
+        sha256: sha256Preview,
+        bytes: previewGif.byteLength,
+        mime: 'image/gif',
+      },
+      {
+        path: 'scene/court.glb',
+        sha256: sha256Scene,
+        bytes: sceneGlb.byteLength,
+        mime: 'model/gltf-binary',
+      },
+    ],
     camera: {
-      default_mode: 'walk',
       spawn: {
         position: [0, 1.7, 9.2],
         target: [0, 1.5, 0],
@@ -197,10 +234,6 @@ export function buildReproducibleCourtArtifacts(): CourtBundleArtifacts {
         version: '0.1.0',
         seed: 1464293702,
       },
-      assets: [
-        { path: 'scene/court.glb', sha256: sha256Scene },
-        { path: 'preview.gif', sha256: sha256Preview },
-      ],
     },
   };
 
@@ -208,7 +241,7 @@ export function buildReproducibleCourtArtifacts(): CourtBundleArtifacts {
   const manifestBytes = new TextEncoder().encode(manifestJson);
 
   const wgifBytes = packDeterministicWgifZip([
-    { path: 'manifest.json', data: manifestBytes },
+    { path: 'manifest.json', data: manifestBytes, store: true },
     { path: 'preview.gif', data: previewGif },
     { path: 'scene/court.glb', data: sceneGlb },
   ]);
@@ -233,21 +266,19 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(currentFile)) {
   const repoRoot = resolve(here, '../../..');
   const artifacts = buildReproducibleCourtArtifacts();
 
-  // Write canonical examples/court.wgif and examples/court/court.wgif
-  const rootExamplesWgif = resolve(repoRoot, 'examples/court.wgif');
-  const pkgCourtWgif = resolve(repoRoot, 'examples/court/court.wgif');
+  // RC1 rule: write ONLY to examples/court/court.gen.wgif and dist/, NEVER overwrite examples/court/court.wgif
+  const genCourtWgif = resolve(repoRoot, 'examples/court/court.gen.wgif');
   const distDir = resolve(repoRoot, 'examples/court/dist');
 
-  mkdirSync(dirname(rootExamplesWgif), { recursive: true });
+  mkdirSync(dirname(genCourtWgif), { recursive: true });
   mkdirSync(distDir, { recursive: true });
 
-  writeFileSync(rootExamplesWgif, artifacts.wgifBytes);
-  writeFileSync(pkgCourtWgif, artifacts.wgifBytes);
+  writeFileSync(genCourtWgif, artifacts.wgifBytes);
   writeFileSync(resolve(distDir, 'manifest.json'), artifacts.manifestJson);
   writeFileSync(resolve(distDir, 'court.glb'), artifacts.sceneGlb);
   writeFileSync(resolve(distDir, 'preview.gif'), artifacts.previewGif);
 
   console.log(
-    `[pack:court] Built deterministic examples/court.wgif (${artifacts.wgifBytes.byteLength} B, sha256=${artifacts.sha256Wgif.slice(0, 12)}…)`
+    `[pack:court] Built deterministic examples/court/court.gen.wgif (${artifacts.wgifBytes.byteLength} B, sha256=${artifacts.sha256Wgif.slice(0, 12)}…)`
   );
 }
