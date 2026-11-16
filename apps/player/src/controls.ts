@@ -176,7 +176,9 @@ export class PlayerControls implements InputSource {
   }
 
   private pointerDown(e: PointerEvent): void {
-    if (!this.enabled || !startsOnScene(e.target)) return;
+    // While the pointer is locked every mouse event targets the lock element (#stage, a DIV), never
+    // the canvas, and no overlay can be under a hidden cursor: a locked press is always a scene press.
+    if (!this.enabled || !(startsOnScene(e.target) || (this.locked && e.pointerType === 'mouse'))) return;
     if (e.pointerType === 'mouse') {
       if (e.button !== 0) return;
       if (this.locked) {

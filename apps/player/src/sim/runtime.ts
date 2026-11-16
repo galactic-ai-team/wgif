@@ -36,7 +36,7 @@ export interface AimAssist {
   angle: number;
   strength: number;
 }
-export const DEFAULT_ASSIST: AimAssist = { speed: 0.04, angle: (2.5 * Math.PI) / 180, strength: 0.7 };
+export const DEFAULT_ASSIST: AimAssist = { speed: 0.1, angle: (5 * Math.PI) / 180, strength: 0.85 };
 /** A shot has to come down at least this steeply (tangent of the angle) to fit through a rim. */
 const MIN_DESCENT = 0.75;
 const GRAB_REACH = 1.8;
