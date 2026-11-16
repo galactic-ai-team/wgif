@@ -72,3 +72,16 @@ npm run build
 npm run size:report                          # human table
 npm run size:report -- --summary /tmp/s.md   # also write markdown
 npm run size:report -- --json                # machine-readable
+```
+
+Exit code is 1 on any violation. `--soft` downgrades to a warning (use only
+while landing a known-large change, and flip it back in the same PR).
+
+## What to do when you are over
+
+| Over budget | First move |
+|---|---|
+| `world.glb` | quantize + meshopt (see `docs/ASSET-COMPRESSION.md`) |
+| `preview.png` | resize to ≤ 1024², re-encode; consider WebP |
+| player JS total | check the biggest chunk in the report; usually ajv, or a lazy dependency imported eagerly |
+| a single chunk | split it — anything not needed for first frame belongs behind `import()` |

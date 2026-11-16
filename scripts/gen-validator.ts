@@ -16,10 +16,12 @@ import path from 'node:path'
 export const DEFAULT_OUT = 'apps/player/src/generated/manifest.validator.js'
 
 const SCHEMA_CANDIDATES = [
+  'packages/format/schema/manifest.v0.1.schema.json',
+  'packages/format/schemas/manifest.v0.1.schema.json',
+  'packages/format/src/manifest.v0.1.schema.json',
+  'packages/format/src/schema/manifest.v0.1.schema.json',
+  // fallback so a rename doesn't silently break the build
   'packages/format/schema/manifest.schema.json',
-  'packages/format/schemas/manifest.schema.json',
-  'packages/format/src/manifest.schema.json',
-  'packages/format/src/schema/manifest.schema.json',
 ]
 
 export function findSchema(root: string): string | null {
@@ -51,7 +53,10 @@ async function main(argv: string[]): Promise<number> {
   const outRel = outIdx >= 0 ? argv[outIdx + 1] : DEFAULT_OUT
   const schemaRel = findSchema(root)
   if (!schemaRel) {
-    console.error(`could not find the manifest schema. Looked for:\n  ${SCHEMA_CANDIDATES.join('\n  ')}`)
+    console.error(
+      `could not find the manifest schema (expected manifest.v0.1.schema.json). Looked for:\n  ` +
+        SCHEMA_CANDIDATES.join('\n  '),
+    )
     return 2
   }
 

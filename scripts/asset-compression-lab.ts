@@ -11,9 +11,11 @@
  *
  * Usage: tsx scripts/asset-compression-lab.ts [--input examples/court/world.glb] [--json]
  */
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { gzipBytes } from './size-report'
+import { inflateRawSync } from 'node:zlib'
+import { gzipBytes, readZipDirectory } from './size-report'
 
 export interface Variant {
   name: string
@@ -36,10 +38,55 @@ export function measureDecoders(root: string): { path: string; bytes: number; gz
   })
 }
 
-export function findInput(root: string): string | null {
-  const candidates = ['examples/court/world.glb', 'examples/court/court.glb']
-  for (const c of candidates) if (existsSync(path.join(root, c))) return c
+/** Pull one entry out of a ZIP. Returns null if the entry is absent or unsupported. */
+export function extractEntry(zip: Uint8Array, name: string): Uint8Array | null {
+  const entry = readZipDirectory(zip).find((e) => e.name === name)
+  if (!entry || entry.localHeaderOffset === undefined) return null
+  const dv = new DataView(zip.buffer, zip.byteOffset, zip.byteLength)
+  const lh = entry.localHeaderOffset
+  if (dv.getUint32(lh, true) !== 0x04034b50) return null
+  const dataStart = lh + 30 + dv.getUint16(lh + 26, true) + dv.getUint16(lh + 28, true)
+  const raw = zip.subarray(dataStart, dataStart + entry.storedBytes)
+  if (entry.method === 0) return raw
+  if (entry.method === 8) return new Uint8Array(inflateRawSync(raw))
   return null
+}
+
+export interface LabInput {
+  /** Human-readable provenance, used in the report. */
+  label: string
+  /** Path handed to io.read(). A temp file for the extracted case. */
+  absPath: string
+  /** Set when we wrote a temp file; caller unlinks on exit. */
+  cleanup: string | null
+}
+
+/**
+ * Resolution order:
+ *   1. --input <path>                       (explicit always wins)
+ *   2. examples/court/world.glb | court.glb (loose file, if it exists)
+ *   3. world.glb extracted from examples/court/court.wgif
+ *   4. null → caller exits 0 with a clear message (NOT an error: an empty lab
+ *      is expected on a fresh checkout before `npm run pack:court`)
+ */
+export function resolveInput(root: string, explicit: string | null): LabInput | null {
+  if (explicit) {
+    const abs = path.resolve(root, explicit)
+    return existsSync(abs) ? { label: explicit, absPath: abs, cleanup: null } : null
+  }
+  for (const rel of ['examples/court/world.glb', 'examples/court/court.glb']) {
+    const abs = path.join(root, rel)
+    if (existsSync(abs)) return { label: rel, absPath: abs, cleanup: null }
+  }
+  const wgifRel = 'examples/court/court.wgif'
+  const wgifAbs = path.join(root, wgifRel)
+  if (!existsSync(wgifAbs)) return null
+  const data = extractEntry(readFileSync(wgifAbs), 'world.glb')
+  if (!data) return null
+  const dir = mkdtempSync(path.join(tmpdir(), 'wgif-lab-'))
+  const abs = path.join(dir, 'world.glb')
+  writeFileSync(abs, data)
+  return { label: `${wgifRel} → world.glb (extracted)`, absPath: abs, cleanup: dir }
 }
 
 export async function runLab(root: string, relInput: string): Promise<Variant[]> {
@@ -55,7 +102,7 @@ export async function runLab(root: string, relInput: string): Promise<Variant[]>
     'meshopt.encoder': MeshoptEncoder,
   })
 
-  const abs = path.join(root, relInput)
+  const abs = path.isAbsolute(relInput) ? relInput : path.join(root, relInput)
   const baselineBuf = readFileSync(abs)
   const variants: Variant[] = [
     { name: 'baseline', bytes: baselineBuf.byteLength, gzip: gzipBytes(baselineBuf), ok: true, note: 'as shipped' },
@@ -117,22 +164,27 @@ async function main(argv: string[]): Promise<number> {
   const root = process.cwd()
   const json = argv.includes('--json')
   const inputIdx = argv.indexOf('--input')
-  const relInput = inputIdx >= 0 ? argv[inputIdx + 1] : findInput(root)
-  if (!relInput) {
-    console.error('no .glb input found; pass --input <path>')
-    return 2
+  const explicit = inputIdx >= 0 ? argv[inputIdx + 1] : null
+  const input = resolveInput(root, explicit)
+  if (!input) {
+    console.log(
+      'lab: no input. Either build the court (`npm run pack:court`) or pass --input <path/to/glb>.',
+    )
+    return 0 // not a failure — fresh checkout, nothing to measure yet
   }
   const decoders = measureDecoders(root)
   let variants: Variant[]
   try {
-    variants = await runLab(root, relInput)
+    variants = await runLab(root, input.absPath)
   } catch (err) {
     console.error(`lab failed: ${(err as Error).message}`)
     console.error('hint: `npm i -D meshoptimizer` is required for the meshopt variant (MIT, free).')
+    if (input.cleanup) rmSync(input.cleanup, { recursive: true, force: true })
     return 2
   }
-  if (json) console.log(JSON.stringify({ input: relInput, variants, decoders }, null, 2))
+  if (json) console.log(JSON.stringify({ input: input.label, variants, decoders }, null, 2))
   else console.log(renderTable(variants, decoders))
+  if (input.cleanup) rmSync(input.cleanup, { recursive: true, force: true })
   return 0
 }
 

@@ -71,6 +71,8 @@ export interface ZipEntry {
   /** 0 = stored, 8 = deflate. */
   method: number
   zip64: boolean
+  /** Offset of the local file header. Populated by readZipDirectory; unused by the size report itself. */
+  localHeaderOffset?: number
 }
 
 export function readZipDirectory(buf: Uint8Array): ZipEntry[] {
@@ -107,7 +109,14 @@ export function readZipDirectory(buf: Uint8Array): ZipEntry[] {
     const name = new TextDecoder().decode(buf.subarray(p + 46, p + 46 + nameLen))
     const zip64 = compressed === 0xffffffff || uncompressed === 0xffffffff
 
-    entries.push({ name, storedBytes: compressed, expandedBytes: uncompressed, method, zip64 })
+    entries.push({
+      name,
+      storedBytes: compressed,
+      expandedBytes: uncompressed,
+      method,
+      zip64,
+      localHeaderOffset: dv.getUint32(p + 42, true),
+    })
     p += 46 + nameLen + extraLen + commentLen
   }
   return entries
@@ -144,8 +153,14 @@ export function formatBytes(n: number): string {
   return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`
 }
 
-/** Already-compressed payloads should be STORED, not deflated: same bytes, less open-time CPU. */
-const PRECOMPRESSED = /\.(png|jpe?g|webp|avif|glb|gltf|ktx2|mp3|ogg|opus|mp4|webm|woff2?|zip|gz|br)$/i
+/**
+ * Truly entropy-coded payloads: re-deflating them costs open-time CPU for ~0%
+ * saving, so they SHOULD be stored (method 0).
+ * Not on this list: .glb/.gltf. A GLB is a binary container, not a compressed
+ * stream — deflate it normally.
+ */
+const PRECOMPRESSED =
+  /\.(png|jpe?g|webp|avif|ktx2|mp3|ogg|opus|mp4|webm|woff2?|zip|gz|br)$/i
 
 const SKIP_DIRS = new Set(['node_modules', '.git', 'coverage', '.vite', '.turbo'])
 
