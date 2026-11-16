@@ -99,10 +99,11 @@ oversize file (`models.oversize`) and a `sizeBytesMax` above 1 MiB (schema).
   missing target, no ONNX → ONNX, no chains. A broken ONNX model falls back
   to its rules twin at load; a broken rules model is a hard error. Fallback
   applies only to load failures: an ONNX model that fails to load —
-  unreadable bytes, a bad graph signature, a missing file — falls back to
+  unreadable bytes, a bad graph signature — falls back to
   its rules twin. It does not apply to a model that loads and then
   misbehaves, and validation failures reject the world before any model
-  loads.
+  loads. A missing declared file or a bad hash is an archive-validation
+  error (`files.absent`, `files.hash`), not a load failure.
 - **Rules files** MUST be valid UTF-8 JSON. The state machine inside is
   validated by the loader (`@wgif/ai` `parseRulesModel`, fail-closed), not by
   the format validator.
