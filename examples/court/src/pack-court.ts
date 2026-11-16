@@ -175,7 +175,7 @@ export function packDeterministicWgifZip(files: ZipInputEntry[]): Uint8Array {
 }
 
 export function buildReproducibleCourtArtifacts(): CourtBundleArtifacts {
-  const seed = 0x57474946; // 1464293702
+  const seed = 0x57474946; // 1464289606
   const sceneGlb = buildCourtGlb(seed);
   const previewGif = generateOrbitPreviewGif(320, 200, 24);
 

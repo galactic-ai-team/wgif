@@ -68,7 +68,7 @@ describe('Phase 1 World Generation — Strict GPT-6 v0.1 RC1 Schema Compliance',
       expect(allowedProvKeys.has(k)).toBe(true);
     }
     expect(manifest.provenance.generator).toContain('@wgif/court-builder@0.1.0');
-    expect(manifest.provenance.generator).toContain('seed=1464293702');
+    expect(manifest.provenance.generator).toContain('seed=1464289606');
 
     expect('camera' in manifest).toBe(false);
     expect(manifest.spawn).toEqual({
