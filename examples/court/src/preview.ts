@@ -51,12 +51,26 @@ export function renderPreviewPng(width = 320, height = 192): Uint8Array {
         const fromBase = L / 2 - Math.abs(x);
         if (fromBase <= 5.8 && Math.abs(z) <= 2.45) c = [178, 46, 31];
         const [rx] = rimCenter(side as 1 | -1);
+        const sign = side;
+        const baseLineX = rx + sign * 1.2;
+        const hashOffsets = [1.75, 2.65, 3.55, 4.45];
+        let onHash = false;
+        if (Math.abs(z) >= 2.45 && Math.abs(z) <= 2.90) {
+          for (let hi = 0; hi < hashOffsets.length; hi++) {
+            const hx = baseLineX - sign * hashOffsets[hi]!;
+            const tickW = hi === 0 ? 0.18 : 0.08;
+            if (Math.abs(x - hx) <= tickW / 2) {
+              onHash = true;
+              break;
+            }
+          }
+        }
         const d3 = Math.hypot(x - rx, z);
         const onArc = Math.abs(z) <= 6.6 ? near(d3, 6.75) && Math.abs(x) < Math.abs(rx) : near(Math.abs(z), 6.6) && fromBase <= 3;
         const onKey = (fromBase <= 5.8 && near(Math.abs(z), 2.45)) || (near(fromBase, 5.8) && Math.abs(z) <= 2.45);
         const onCircle = near(Math.hypot(x, z), 1.8) || (near(Math.hypot(Math.abs(x) - (L / 2 - 5.8), z), 1.8) && fromBase > 5.8);
         const onBoundary = near(Math.abs(x), L / 2) || near(Math.abs(z), W / 2) || near(x, 0);
-        if (onArc || onKey || onCircle || onBoundary) c = [245, 245, 245];
+        if (onArc || onKey || onCircle || onBoundary || onHash) c = [245, 245, 245];
         if (near(Math.hypot(x - rx, z), COURT.rimRadius * 2)) c = [255, 96, 16];
       } else if (Math.abs(z) > W / 2 + 2.5) {
         c = [70, 74, 86]; // bleachers
