@@ -257,6 +257,7 @@ export async function buildWorldFromImage(
         model: modelUsed,
         license,
         source_sha256: sourceImageSha256,
+        input_dimensions: [opts.width, opts.height],
         grid_size: [gw, gh],
         fov_deg: fovDeg,
         depth_scale: depthScale,
