@@ -5,6 +5,7 @@
     "rootDir": ".",
     "declaration": true,
     "noEmit": false,
+    "types": ["node"],
     "verbatimModuleSyntax": false
   },
   "include": ["src", "schema/*.json"]

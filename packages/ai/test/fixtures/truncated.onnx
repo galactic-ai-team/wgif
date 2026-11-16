@@ -1,0 +1,13 @@
+wgif-train-rebounder-mlp:‘5
+
+obs
+W1
+b1z1"Gemm
+
+z1a1"Tanh
+
+a1
+W2
+b2z2"Gemm
+
+

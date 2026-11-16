@@ -1,5 +1,16 @@
 import { unpackWgif, type WgifWorld } from '@wgif/format';
 
+/** Capabilities actually implemented by this player, not merely known to the WGIF spec. */
+const PLAYER_CAPABILITIES = new Set([
+  'scene.glb',
+  'interaction.camera',
+  // @wgif/ai ships the rules runtime (rebounder NPC); the court requires it.
+  // 'runtime.onnx' is deliberately NOT listed: the player runs ONNX models
+  // only through the JS MLP evaluator for small MLPs, not arbitrary graphs,
+  // and the court does not require it (rules fallback).
+  'runtime.rules',
+]);
+
 export class WorldOpenError extends Error {
   constructor(message: string, public details: string[] = []) {
     super(message);
@@ -17,6 +28,10 @@ export async function openWorld(bytes: Uint8Array): Promise<WgifWorld> {
   }
   if (!world.report.ok) {
     throw new WorldOpenError('This .wgif failed validation', world.report.errors.map((e) => `${e.code}: ${e.message}`));
+  }
+  const missing = (world.manifest.requires ?? []).filter((cap) => !PLAYER_CAPABILITIES.has(cap));
+  if (missing.length) {
+    throw new WorldOpenError('This world requires unsupported player features', missing.map((cap) => `requires: ${cap}`));
   }
   return world;
 }

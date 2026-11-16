@@ -1,0 +1,22 @@
+{
+  "pass": [
+    "good-minimal.wgif",
+    "good-layered.wgif"
+  ],
+  "reject": [
+    "bad-notzip.wgif",
+    "bad-truncated.wgif",
+    "bad-duplicate.wgif",
+    "bad-missing-manifest.wgif",
+    "bad-compressed-manifest.wgif",
+    "bad-traversal.wgif",
+    "bad-prototype.wgif",
+    "bad-hash.wgif",
+    "bad-json.wgif",
+    "bad-interactions.wgif",
+    "bad-state.wgif",
+    "bad-layer.wgif",
+    "bad-executable.wgif",
+    "bad-major.wgif"
+  ]
+}

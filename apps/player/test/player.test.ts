@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import * as THREE from 'three';
+import { packWgif, unpackWgif } from '@wgif/format';
 import { parseGlb } from '../src/viewer.js';
 import { cameraHints, openWorld } from '../src/world.js';
 
@@ -21,10 +22,26 @@ describe('player pipeline (headless)', () => {
     expect(box.max.x - box.min.x).toBeGreaterThan(28);
   });
 
+  it('refuses unsupported requires[] with a readable diagnostic', async () => {
+    const world = await unpackWgif(court);
+    const bytes = await packWgif({ ...world.manifest, requires: ['scene.glb', 'runtime.onnx'] }, world.files);
+    await expect(openWorld(bytes)).rejects.toMatchObject({
+      message: 'This world requires unsupported player features',
+      details: ['requires: runtime.onnx'],
+    });
+  });
+
   it('rejects a corrupted file with a readable error', async () => {
+    // Corrupt one hex digit of the first sha256 in the manifest itself: the
+    // manifest still parses, but the hash no longer matches the file, so
+    // validation must reject it. (Flipping a byte near the end of the archive
+    // used to work, but that lands in the ZIP central directory, which the
+    // reader tolerates — and its position shifts as files are added.)
     const broken = court.slice();
-    const i = broken.length - 200;
-    broken[i] = (broken[i] ?? 0) ^ 0xff;
+    const text = new TextDecoder().decode(broken);
+    const at = text.indexOf('"sha256": "') + '"sha256": "'.length;
+    expect(at).toBeGreaterThan(0);
+    broken[at] = broken[at] === 0x30 ? 0x31 : 0x30; // '0' <-> '1'
     await expect(openWorld(broken)).rejects.toThrow();
   });
 });
