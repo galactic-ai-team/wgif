@@ -448,16 +448,23 @@ export function measurePlayer(distDir: string): PlayerReport | null {
 
   const manifest = readViteManifest(distDir);
   const jsFiles = files.filter((f) => f.rel.endsWith(".js"));
+  // Service workers are fetched by the browser, not imported by the app, so
+  // they are not chunks. Exclude them from the initial/deferred split so a
+  // precached sw.js or Workbox runtime doesn't get flagged as an oversized
+  // deferred chunk — but keep them in jsGzip/totalGzip, where they belong.
+  const isServiceWorker = (rel: string): boolean =>
+    /(^|\/)(sw\.js|workbox-[^/]*\.js)$/.test(rel);
+  const chunkFiles = jsFiles.filter((f) => !isServiceWorker(f.rel));
   let initial: DistFile[];
   let deferred: DistFile[];
   if (manifest) {
     const initialSet = computeInitialFiles(manifest);
-    initial = jsFiles.filter((f) => initialSet.has(f.rel));
-    deferred = jsFiles.filter((f) => !initialSet.has(f.rel));
+    initial = chunkFiles.filter((f) => initialSet.has(f.rel));
+    deferred = chunkFiles.filter((f) => !initialSet.has(f.rel));
   } else {
-    // No manifest: treat every JS file as initial so a lazy chunk can't dodge
+    // No manifest: treat every chunk as initial so a lazy chunk can't dodge
     // the 300 KiB gate by staying unclassified. Set build.manifest: true.
-    initial = jsFiles;
+    initial = chunkFiles;
     deferred = [];
   }
 

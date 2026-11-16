@@ -570,6 +570,41 @@ describe("measurePlayer", () => {
     expect(p!.initial.map((f) => f.rel)).toEqual(["assets/index-abc.js"]);
     expect(p!.deferred).toEqual([]);
   });
+
+  it('does not classify service workers as deferred chunks', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'wgif-dist-sw-'));
+    mkdirSync(path.join(dir, '.vite'), { recursive: true });
+    mkdirSync(path.join(dir, 'assets'), { recursive: true });
+    writeFileSync(
+      path.join(dir, '.vite', 'manifest.json'),
+      JSON.stringify({
+        'index.html': { file: 'assets/index-abc.js', isEntry: true },
+        'src/lazy.ts': { file: 'assets/lazy-xyz.js', isDynamicEntry: true },
+      }),
+    );
+    writeFileSync(path.join(dir, 'assets', 'index-abc.js'), 'const a=1;'.repeat(100));
+    writeFileSync(path.join(dir, 'assets', 'lazy-xyz.js'), 'const c=3;'.repeat(200));
+    writeFileSync(path.join(dir, 'sw.js'), 'self.addEventListener("install", () => {});'.repeat(20));
+    writeFileSync(path.join(dir, 'workbox-abcd1234.js'), '// workbox runtime'.repeat(50));
+
+    const p = measurePlayer(dir);
+    expect(p).not.toBeNull();
+    if (!p) throw new Error('expected report');
+
+    // Neither sw.js nor workbox-*.js is a chunk; both must be absent from
+    // the deferred list even though they are not in the manifest's
+    // initial graph.
+    const deferredRels = p.deferred.map((f) => f.rel);
+    expect(deferredRels).toEqual(['assets/lazy-xyz.js']);
+    expect(deferredRels).not.toContain('sw.js');
+    expect(deferredRels).not.toContain('workbox-abcd1234.js');
+
+    // jsGzip still includes them: they are part of the total JS a user ships.
+    const sw = p.files.find((f) => f.rel === 'sw.js');
+    const wb = p.files.find((f) => f.rel === 'workbox-abcd1234.js');
+    if (!sw || !wb) throw new Error('expected sw and workbox entries in files');
+    expect(p.jsGzip).toBe(p.jsInitialGzip + p.jsDeferredGzip + sw.gzip + wb.gzip);
+  });
 });
 
 // ---------------------------------------------------------------------------
