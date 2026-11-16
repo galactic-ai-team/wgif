@@ -129,5 +129,19 @@ export async function exportEditedWorld(
       next.provenance = { ...next.provenance, parent: { id: before.id, signingHash: await signingHash(before) } };
     }
   }
-  return packManifestAndFiles(next, world.files, opts);
+  // Export is a portability boundary: an edit must not produce an archive that
+  // another v0.1 reader immediately rejects. Reopen the serialized bytes so
+  // ZIP safety, file hashes, declarative payloads and signatures are checked.
+  const archive = packManifestAndFiles(next, world.files, opts);
+  let reopened: WgifWorld;
+  try { reopened = await unpackWgif(archive); }
+  catch (error) {
+    throw new WgifReadError('export.invalid', `edited archive failed to reopen: ${(error as Error).message}`);
+  }
+  if (!reopened.report.ok || reopened.report.signature === 'invalid') {
+    const errors = reopened.report.errors.map((issue) => `${issue.code}: ${issue.message}`);
+    if (reopened.report.signature === 'invalid') errors.push('signature.invalid: edited archive has an invalid signature');
+    throw new WgifReadError('export.invalid', `edited archive failed validation: ${errors.join('; ')}`);
+  }
+  return archive;
 }
