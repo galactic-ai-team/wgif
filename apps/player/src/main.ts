@@ -80,8 +80,17 @@ function notify(message: string, kind: 'error' | 'ok' = 'ok', details: string[] 
 
 const showError = (message: string, details: string[] = []): void => notify(message, 'error', details, 9000);
 
+let hintTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Body classes the phone layout keys on: `touch` once a finger is seen, `playing` while walking (not editing). */
+function setLayout(): void {
+  document.body.classList.toggle('touch', controls.touch);
+  document.body.classList.toggle('playing', viewer?.mode === 'walk' && !editing);
+}
+
 function setHint(): void {
   const mode: ControlMode = viewer?.mode ?? 'orbit';
+  setLayout();
   modeBtn.textContent = `Mode: ${mode === 'orbit' ? 'Orbit' : 'Walk'}`;
   hint.hidden = !viewer?.runtime;
   hint.textContent =
@@ -92,6 +101,9 @@ function setHint(): void {
         : controls.locked
           ? 'WASD/arrows move · Shift runs · click or Space shoots · E picks up/drops · R resets the ball · Esc frees the mouse'
           : 'Walk: click the scene to look around · WASD/arrows to move';
+  // On a phone the hint sits over the play area: show it for a moment, then get out of the way.
+  if (hintTimer) clearTimeout(hintTimer);
+  if (controls.touch && mode === 'walk') hintTimer = setTimeout(() => (hint.hidden = true), 5000);
 }
 
 function setMode(mode: ControlMode): void {
@@ -309,7 +321,13 @@ function onFrame(rt: WorldRuntime, events: RuntimeEvent[], dt: number): void {
       const sorted = [...frameTimes].sort((a, b) => a - b);
       const s = viewer.stats();
       perfBox.hidden = false;
-      perfBox.textContent = `draw calls ${s.calls}\ntriangles ${s.triangles}\nframe p50 ${sorted[Math.floor(sorted.length * 0.5)]?.toFixed(1)} ms\nframe p95 ${sorted[Math.floor(sorted.length * 0.95)]?.toFixed(1)} ms\nquality ${s.level} · ${s.pixelRatio.toFixed(2)}x · shadows ${s.shadows ? 'on' : 'off'}`;
+      perfBox.textContent = [
+        `draw calls ${s.calls} · triangles ${s.triangles}`,
+        `static meshes ${s.merged.before} → ${s.merged.after} (merged)`,
+        `frame p50 ${sorted[Math.floor(sorted.length * 0.5)]?.toFixed(1)} ms · p95 ${sorted[Math.floor(sorted.length * 0.95)]?.toFixed(1)} ms`,
+        `frames drawn ${s.frames} (none while nothing changes)`,
+        `quality ${s.level} · ${s.pixelRatio.toFixed(2)}x · shadows ${s.shadows ? 'on' : 'off'}`,
+      ].join('\n');
     }
   }
 }
@@ -370,6 +388,7 @@ function setEditing(on: boolean): void {
   }
   rt.agentsEnabled = !on;
   viewer.setMarkers(on);
+  setLayout();
   syncButtons();
 }
 

@@ -4,7 +4,7 @@
 body { margin: 0; height: 100vh; height: 100dvh; display: flex; flex-direction: column; overscroll-behavior: none; }
 header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; padding: 8px 12px; padding-top: max(8px, env(safe-area-inset-top)); background: #141833; }
 .actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.btn { cursor: pointer; border: 1px solid #3a4280; background: #1e2550; color: inherit; padding: 6px 10px; border-radius: 6px; font: inherit; font-size: 14px; }
+.btn { touch-action: manipulation; cursor: pointer; border: 1px solid #3a4280; background: #1e2550; color: inherit; padding: 6px 10px; border-radius: 6px; font: inherit; font-size: 14px; }
 .btn:disabled { opacity: 0.5; cursor: default; }
 .btn.primary { background: #c2571a; border-color: #ef8a4a; }
 .btn[aria-pressed='true'] { background: #3b46a0; border-color: #8ea0ff; }
@@ -66,5 +66,17 @@ aside ul { padding-left: 18px; margin: 4px 0; }
 .mono { font-family: ui-monospace, monospace; font-size: 12px; padding-left: 16px; }
 #toast { position: fixed; right: 12px; bottom: 12px; max-width: min(420px, calc(100vw - 24px)); background: #7a2b2b; padding: 10px 14px; border-radius: 8px; white-space: pre-wrap; z-index: 10; }
 #toast.ok { background: #23633a; }
-@media (max-width: 720px) { main { flex-direction: column; } aside { width: auto; max-height: 34vh; border-left: 0; border-top: 1px solid #232a55; } .brand .muted { display: none; } }
+@media (max-width: 720px) {
+  main { flex-direction: column; }
+  aside { width: auto; max-height: 34vh; border-left: 0; border-top: 1px solid #232a55; }
+  /* One compact header row: the logo, then the buttons, scrolling sideways if they do not fit. */
+  header { flex-wrap: nowrap; padding: 6px 8px; padding-top: max(6px, env(safe-area-inset-top)); }
+  .brand strong, .brand .muted { display: none; }
+  .actions { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .actions .btn { flex: none; padding: 6px 9px; font-size: 13px; }
+  /* Playing: the 3D view gets the whole screen. The sidebar comes back in orbit view and while editing. */
+  body.playing aside { display: none; }
+  #prompt { white-space: normal; max-width: calc(100% - 40px); text-align: center; }
+}
+body.touch .hint { top: 62px; bottom: auto; left: 50%; transform: translateX(-50%); width: max-content; max-width: calc(100% - 24px); text-align: center; }
 @media (max-height: 480px) and (orientation: landscape) { aside { display: none; } header { padding: 4px 8px; } .btn { padding: 4px 8px; font-size: 13px; } }

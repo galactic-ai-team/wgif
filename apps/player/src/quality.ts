@@ -19,6 +19,7 @@ export interface QualityOptions {
   mobile: boolean;
 }
 
+/** PERF.md fix #4: one directional light at 1024² is plenty for a court-sized world, and it is drawn once. */
 interface Level {
   maxPixelRatio: number;
   shadows: boolean;
@@ -26,7 +27,7 @@ interface Level {
 }
 
 const LEVELS: readonly Level[] = [
-  { maxPixelRatio: 2, shadows: true, shadowMapSize: 2048 },
+  { maxPixelRatio: 2, shadows: true, shadowMapSize: 1024 },
   { maxPixelRatio: 1.5, shadows: true, shadowMapSize: 1024 },
   { maxPixelRatio: 1.25, shadows: true, shadowMapSize: 1024 },
   { maxPixelRatio: 1, shadows: false, shadowMapSize: 1024 },

@@ -5,7 +5,8 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { parseGlb } from './glb.js';
 import type { GameState } from './interactions.js';
 import { QualityGovernor } from './quality.js';
-import { createRuntime, findNodes, type SceneColliders } from './sceneBridge.js';
+import { mergeStatic, type MergeStats } from './merge.js';
+import { createRuntime, findNodes, nodeName, type SceneColliders } from './sceneBridge.js';
 import type { AgentBody } from './sim/agents.js';
 import { LAYER_SOLID, newRayHit } from './sim/colliders.js';
 import { IDLE_INPUT, type Grabbable, type PlayerInput, type RuntimeEvent, type WorldRuntime } from './sim/runtime.js';
@@ -31,6 +32,8 @@ export interface ViewerHooks {
 interface Dynamic {
   object: Grabbable;
   pivot: THREE.Object3D;
+  /** Soft contact shadow under it. Moving things do not cast into the shadow map, which is drawn once. */
+  blob: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
 }
 
 interface Flash {
@@ -75,13 +78,20 @@ export class WorldViewer {
   private eyeY = 0;
   private renderFrames = 2;
   private shadowsDirty = true;
+  /** The camera as last drawn, so a walker standing still costs no frames. */
+  private readonly lastView = new Float64Array(16);
+  private renderedLastFrame = false;
+  private readonly blobGeometry = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
+  private readonly blobTexture = blobTexture();
+  /** Draw calls saved by merging the static world (PERF.md fix #1), for the perf overlay. */
+  merged: MergeStats = { before: 0, after: 0 };
 
   constructor(private readonly host: HTMLElement, private readonly input: InputSource) {
     const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
     const dpr = window.devicePixelRatio || 1;
     this.quality = new QualityGovernor({ devicePixelRatio: dpr, mobile: coarse });
-    // MSAA is expensive on dense phone screens, where it also matters least.
-    this.renderer = new THREE.WebGLRenderer({ antialias: !(coarse && dpr >= 2), powerPreference: 'high-performance' });
+    // PERF.md fix #5: MSAA is expensive on dense (mostly phone) screens, where it also matters least.
+    this.renderer = new THREE.WebGLRenderer({ antialias: dpr < 2, powerPreference: 'high-performance' });
     // Dee's mobile item 1: never render above 2x. The quality governor may only go lower from here.
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -89,7 +99,8 @@ export class WorldViewer {
     this.renderer.toneMapping = THREE.NeutralToneMapping;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
-    // The world is static: shadows are redrawn only when something that casts one has moved.
+    // PERF.md fix #4: the world is static, so its shadow map is drawn once per load. Moving things
+    // get soft contact shadows instead (see `blob`), so play never pays for a shadow pass.
     this.renderer.shadowMap.autoUpdate = false;
     host.appendChild(this.renderer.domElement);
     this.renderer.domElement.addEventListener('webglcontextlost', (e) => e.preventDefault());
@@ -109,7 +120,8 @@ export class WorldViewer {
     pmrem.dispose();
 
     this.orbit = new OrbitControls(this.camera, this.renderer.domElement);
-    this.orbit.enableDamping = true;
+    // PERF.md fix #8: damping keeps rendering after the finger lifts; phones skip it.
+    this.orbit.enableDamping = !coarse;
     this.orbit.maxPolarAngle = Math.PI * 0.495;
     this.orbit.addEventListener('change', () => this.invalidate());
 
@@ -162,6 +174,9 @@ export class WorldViewer {
       mesh.receiveShadow = true;
     });
     for (const object of made.runtime.objects.values()) this.bind(object, group);
+    // PERF.md fix #1: what never moves becomes a few draw calls. Objects and the props that light up keep their own nodes.
+    const keep = new Set<string>([...doc.interactions.objects.map((o) => o.node ?? o.id), ...made.built.props]);
+    this.merged = mergeStatic(group, (o) => keep.has(nodeName(o)));
 
     const box = new THREE.Box3().setFromObject(group);
     if (box.isEmpty()) box.set(new THREE.Vector3(-1, -1, -1), new THREE.Vector3(1, 1, 1));
@@ -271,7 +286,7 @@ export class WorldViewer {
     for (const root of [this.dynamicRoot, this.world]) {
       root?.traverse((o) => {
         const mesh = o as THREE.Mesh;
-        mesh.geometry?.dispose();
+        if (mesh.geometry !== this.blobGeometry) mesh.geometry?.dispose();
         const material = mesh.material as THREE.Material | THREE.Material[] | undefined;
         for (const m of Array.isArray(material) ? material : material ? [material] : []) {
           for (const value of Object.values(m)) if ((value as THREE.Texture | null)?.isTexture) (value as THREE.Texture).dispose();
@@ -295,13 +310,15 @@ export class WorldViewer {
       new THREE.Box3().setFromObject(node).getCenter(pivot.position);
       this.dynamicRoot.add(pivot);
       pivot.attach(node);
+      node.traverse((o) => (o.castShadow = false));
     } else {
       const mesh = new THREE.Mesh(new THREE.SphereGeometry(object.params.radius, 24, 16), new THREE.MeshStandardMaterial({ color: 0xe86a1a, roughness: 0.7 }));
-      mesh.castShadow = true;
       pivot.add(mesh);
       this.dynamicRoot.add(pivot);
     }
-    this.dynamics.push({ object, pivot });
+    const blob = this.blob();
+    this.dynamicRoot.add(blob);
+    this.dynamics.push({ object, pivot, blob });
   }
 
   /** A simple stand-in figure for an agent: a capsule with a visor showing which way it faces. */
@@ -313,20 +330,31 @@ export class WorldViewer {
       new THREE.MeshStandardMaterial({ color: body.color, roughness: 0.55 }),
     );
     torso.position.y = body.height / 2;
-    torso.castShadow = true;
     const visor = new THREE.Mesh(new THREE.BoxGeometry(body.radius * 1.3, 0.1, 0.08), new THREE.MeshStandardMaterial({ color: 0x10121f, roughness: 0.3 }));
     visor.position.set(0, body.height - body.radius * 0.9, -body.radius * 0.93);
-    group.add(torso, visor);
+    const blob = this.blob();
+    blob.position.y = 0.012;
+    blob.scale.setScalar(body.radius * 3.2);
+    blob.material.opacity = 0.42;
+    group.add(torso, visor, blob);
     this.dynamicRoot.add(group);
     this.bodies.set(role, group);
     return group;
   }
 
   /** Renderer statistics for the `?perf=1` overlay (docs/PERF.md). */
-  stats(): { calls: number; triangles: number; level: number; pixelRatio: number; shadows: boolean } {
-    const { calls, triangles } = this.renderer.info.render;
+  stats(): { calls: number; triangles: number; level: number; pixelRatio: number; shadows: boolean; merged: MergeStats; frames: number } {
+    const { calls, triangles, frame } = this.renderer.info.render;
     const q = this.quality.settings;
-    return { calls, triangles, level: this.quality.level, pixelRatio: q.pixelRatio, shadows: q.shadows };
+    return { calls, triangles, level: this.quality.level, pixelRatio: q.pixelRatio, shadows: q.shadows, merged: this.merged, frames: frame };
+  }
+
+  /** A soft round shadow on the ground, for things that move. */
+  private blob(): THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial> {
+    const mesh = new THREE.Mesh(this.blobGeometry, new THREE.MeshBasicMaterial({ color: 0x000000, alphaMap: this.blobTexture, transparent: true, opacity: 0.5, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
+    mesh.renderOrder = 1;
+    mesh.visible = false;
+    return mesh;
   }
 
   private frame(): void {
@@ -341,14 +369,23 @@ export class WorldViewer {
         if (yaw !== 0 || pitch !== 0) rt.player.look(yaw, pitch);
       }
       rt.update(dt, walking ? this.input.input : IDLE_INPUT);
-      active = this.sync(rt, dt) || walking;
+      active = this.sync(rt, dt);
       this.hooks.onFrame?.(rt, rt.drain(), dt);
     }
     if (this.mode === 'orbit' && this.orbit.update()) active = true;
     if (this.animateFlashes(dt)) active = true;
-    if (!active && this.renderFrames <= 0) return;
+    // Idle render: a walker standing still in a still world costs no frames, just like orbit view.
+    this.camera.updateMatrixWorld();
+    if (!sameMatrix(this.lastView, this.camera.matrixWorld.elements)) active = true;
+    if (!active && this.renderFrames <= 0) {
+      this.renderedLastFrame = false;
+      return;
+    }
     this.renderFrames--;
-    if (this.quality.sample(dt * 1000)) this.applyQuality();
+    this.lastView.set(this.camera.matrixWorld.elements);
+    // Only back-to-back frames say anything about speed; the first one after an idle gap does not.
+    if (this.renderedLastFrame && this.quality.sample(dt * 1000)) this.applyQuality();
+    this.renderedLastFrame = true;
     if (this.shadowsDirty) {
       this.renderer.shadowMap.needsUpdate = true;
       this.shadowsDirty = false;
@@ -359,7 +396,7 @@ export class WorldViewer {
   /** Copies simulation state into the scene. Returns true while something is moving. */
   private sync(rt: WorldRuntime, dt: number): boolean {
     let moving = false;
-    for (const { object, pivot } of this.dynamics) {
+    for (const { object, pivot, blob } of this.dynamics) {
       const a = rt.alpha, p = object.prev, c = object.body.pos;
       const x = p[0] + (c[0] - p[0]) * a, y = p[1] + (c[1] - p[1]) * a, z = p[2] + (c[2] - p[2]) * a;
       if (pivot.position.x !== x || pivot.position.y !== y || pivot.position.z !== z) {
@@ -369,6 +406,7 @@ export class WorldViewer {
       const vx = object.body.vel[0], vz = object.body.vel[2];
       const speed = Math.hypot(vx, vz);
       if (!object.held && speed > 0.01) pivot.rotateOnWorldAxis(axis.set(vz / speed, 0, -vx / speed), (speed * dt) / object.params.radius);
+      this.placeBlob(rt, blob, x, y, z, object.params.radius);
     }
     for (const { role, body } of rt.bodies) {
       const figure = this.bodies.get(role) ?? this.figure(role, body);
@@ -387,13 +425,13 @@ export class WorldViewer {
         moving = true;
       }
     }
-    if (moving) this.shadowsDirty = true;
 
     if (this.mode === 'walk') {
-      const eye = rt.player.eye;
-      // Steps and kerbs move the feet instantly; ease the eye so the view does not jolt.
+      const eye = rt.player.eyeInto(eyeAt);
+      // Steps and kerbs move the feet instantly; ease the eye so the view does not jolt. Snap the
+      // last millimetre, or the camera would creep forever and the frame would never go idle.
       const gap = eye[1] - this.eyeY;
-      this.eyeY = Math.abs(gap) > 1 ? eye[1] : this.eyeY + gap * Math.min(1, dt * 14);
+      this.eyeY = Math.abs(gap) > 1 || Math.abs(gap) < 1e-3 ? eye[1] : this.eyeY + gap * Math.min(1, dt * 14);
       this.camera.position.set(eye[0], this.eyeY, eye[2]);
       this.camera.rotation.set(rt.player.pitch, rt.player.yaw, 0, 'YXZ');
     }
@@ -418,6 +456,19 @@ export class WorldViewer {
       if (spawn.lookAt) this.spawnMarker.rotation.z = Math.atan2(-(spawn.lookAt[0] - spawn.position[0]), -(spawn.lookAt[2] - spawn.position[2])) + Math.PI / 2;
     }
     return moving || rt.charging || !!rt.shootout?.running;
+  }
+
+  /** Puts a contact shadow on the ground under a moving thing: larger and fainter the higher it is. */
+  private placeBlob(rt: WorldRuntime, blob: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>, x: number, y: number, z: number, radius: number): void {
+    if (!rt.colliders.raycast(x, y, z, 0, -1, 0, 25, LAYER_SOLID, ray)) {
+      blob.visible = false;
+      return;
+    }
+    const height = Math.max(0, y - radius - ray.y);
+    blob.visible = true;
+    blob.position.set(x, ray.y + 0.012, z);
+    blob.scale.setScalar(radius * 2.6 * (1 + height * 0.35));
+    blob.material.opacity = 0.55 * Math.max(0, 1 - height / 4);
   }
 
   private animateFlashes(dt: number): boolean {
@@ -487,4 +538,25 @@ export class WorldViewer {
 }
 
 const axis = new THREE.Vector3();
+const eyeAt: Vec3 = [0, 0, 0];
 const glow = new THREE.Color(1, 0.62, 0.12);
+
+function sameMatrix(a: Float64Array, b: ArrayLike<number>): boolean {
+  for (let i = 0; i < 16; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/** A 64×64 radial falloff, generated here: no image file to ship or cache. */
+function blobTexture(): THREE.DataTexture {
+  const size = 64, data = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const r = Math.hypot(x + 0.5 - size / 2, y + 0.5 - size / 2) / (size / 2);
+      const a = Math.max(0, 1 - r) ** 1.6;
+      data.set([a * 255, a * 255, a * 255, 255], (y * size + x) * 4);
+    }
+  }
+  const texture = new THREE.DataTexture(data, size, size);
+  texture.needsUpdate = true;
+  return texture;
+}

@@ -138,6 +138,8 @@ function mulberry32(seed: number): () => number {
 }
 
 const ray = newRayHit();
+// Scratch vectors for carry(), which runs every frame.
+const carryE: Vec3 = [0, 0, 0], carryF: Vec3 = [0, 0, 0], carryR: Vec3 = [0, 0, 0], carryU: Vec3 = [0, 0, 0];
 
 export class WorldRuntime {
   readonly colliders: StaticColliders;
@@ -629,7 +631,7 @@ export class WorldRuntime {
   private carry(): void {
     const o = this.held ? this.tracked.get(this.held) : undefined;
     if (!o) return;
-    const p = this.player, e = p.eye, f = p.forward, r = p.right, u = p.up;
+    const p = this.player, e = p.eyeInto(carryE), f = p.forwardInto(carryF), r = p.rightInto(carryR), u = p.upInto(carryU);
     const lift = this.charging ? 0.25 + 0.35 * this.power : 0;
     const fwd = 0.55, side = 0.24 * (1 - lift), down = -0.3 + 0.42 * lift;
     for (let k = 0; k < 3; k++) {
