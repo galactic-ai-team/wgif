@@ -1,0 +1,24 @@
+{
+  "name": "@wgif/format",
+  "version": "0.1.0-draft.0",
+  "description": "Reference reader/writer/validator for the WGIF container format (v0.1 draft).",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema/manifest.v0.1.schema.json": "./schema/manifest.v0.1.schema.json"
+  },
+  "files": ["src", "schema", "dist"],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@noble/ed25519": "^3.2.0",
+    "ajv": "^8.20.0",
+    "fflate": "^0.8.3"
+  }
+}

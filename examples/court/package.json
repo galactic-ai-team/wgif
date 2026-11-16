@@ -1,0 +1,17 @@
+{
+  "name": "@wgif/example-court",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Handcrafted, procedurally built basketball-court world packed as court.wgif (Phase One proof).",
+  "type": "module",
+  "scripts": {
+    "pack": "tsx src/cli.ts",
+    "build": "tsx src/cli.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@gltf-transform/core": "^4.5.1",
+    "@wgif/format": "*"
+  }
+}

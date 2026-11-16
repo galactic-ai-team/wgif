@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%22.9em%22 font-size=%2290%22%3E🌌%3C/text%3E%3C/svg%3E" />
+    <title>WGIF Player</title>
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <header>
+      <div class="brand">🌌 <strong>WGIF Player</strong> <span class="muted">v0.1 proof</span></div>
+      <div class="actions">
+        <label class="btn" for="file">Open .wgif<input id="file" type="file" accept=".wgif,application/vnd.wgif+zip,application/zip" hidden /></label>
+        <button class="btn" id="sample" type="button">Load sample court</button>
+        <button class="btn" id="mode" type="button" disabled>Mode: Orbit</button>
+      </div>
+    </header>
+    <main>
+      <div id="stage">
+        <div id="empty" class="overlay">
+          <p><strong>Drop a .wgif file here</strong></p>
+          <p class="muted">or use “Open .wgif” / “Load sample court”. Everything runs locally in your browser.</p>
+        </div>
+        <div id="drop" class="overlay drop" hidden>Release to open</div>
+        <div id="hint" class="hint" hidden></div>
+      </div>
+      <aside id="info" hidden>
+        <img id="preview" alt="World preview" />
+        <h2 id="title"></h2>
+        <p id="creator" class="muted"></p>
+        <p><span id="badge" class="badge"></span> <span id="sig" class="badge"></span></p>
+        <p id="desc"></p>
+        <ul id="issues"></ul>
+        <details>
+          <summary>Files</summary>
+          <ul id="files" class="mono"></ul>
+        </details>
+      </aside>
+    </main>
+    <div id="toast" role="status" hidden></div>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

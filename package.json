@@ -1,0 +1,33 @@
+{
+  "name": "wgif",
+  "private": true,
+  "version": "0.0.0",
+  "description": "WGIF — World Generative Interactive Format: portable, explorable, interactive 3D worlds in a single file.",
+  "license": "MIT",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "examples/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present",
+    "pack:court": "npm run pack --workspace @wgif/example-court",
+    "dev": "npm run dev --workspace @wgif/player"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.19.2",
+    "eslint": "^10.15.0",
+    "tsx": "^4.23.15",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.72.2",
+    "vitest": "^5.1.0"
+  }
+}

@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test
+      - name: Build (library, sample world, player)
+        run: npm run build
+      - name: Sample world is reproducible and committed
+        run: git diff --exit-code -- examples/court/court.wgif
+      - name: Size summary
+        run: |
+          {
+            echo "### WGIF sizes"
+            echo "| artifact | bytes |"
+            echo "|---|---|"
+            echo "| examples/court/court.wgif | $(stat -c %s examples/court/court.wgif) |"
+            for f in apps/player/dist/assets/*.js; do echo "| $f | $(stat -c %s "$f") |"; done
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wgif-player-dist
+          path: |
+            apps/player/dist
+            examples/court/court.wgif
+          retention-days: 14
