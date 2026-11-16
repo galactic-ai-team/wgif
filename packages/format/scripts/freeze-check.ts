@@ -27,6 +27,15 @@ const isObject = (v: unknown): v is Json => v !== null && typeof v === 'object' 
 const loadJson = (path: string): unknown => JSON.parse(readFileSync(path, 'utf8')) as unknown;
 const sha256 = (data: Uint8Array): string => createHash('sha256').update(data).digest('hex');
 
+/** v0.1 makes manifest.requires[] optional; absent means no non-baseline requirements. */
+export function optionalManifestRequires(manifest: unknown): string[] | null {
+  if (!isObject(manifest)) return null;
+  const value = manifest.requires;
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || !value.every((cap): cap is string => typeof cap === 'string')) return null;
+  return value;
+}
+
 /** Checklist headings are a contract: adding a gate cannot silently bypass CI. */
 export function auditChecklist(source: string): string[] {
   const errors: string[] = [];
@@ -106,13 +115,14 @@ function auditRelease(root = ROOT): string[] {
     check(artifactHashes[artifact] === sha256(bytes), `artifact hash mismatch: ${artifact}`);
     try {
       const { manifestJson, files } = readContainer(bytes);
+      const requires = optionalManifestRequires(manifestJson);
       if (!isObject(manifestJson) || !isObject(manifestJson.entry) ||
-        typeof manifestJson.entry.scene !== 'string' || !Array.isArray(manifestJson.requires)) {
+        typeof manifestJson.entry.scene !== 'string' || requires === null) {
         problems.push(`${artifact}: malformed manifest`);
       } else {
         const scene = files[manifestJson.entry.scene];
         if (!scene) problems.push(`${artifact}: missing scene GLB`);
-        else for (const issue of checkGlbExtensions(scene, manifestJson.requires as string[], true))
+        else for (const issue of checkGlbExtensions(scene, requires, true))
           problems.push(`${artifact}: ${issue.code}: ${issue.message}`);
         check(manifestJson.wgif === '0.1', `${artifact}: manifest version must be 0.1`);
       }

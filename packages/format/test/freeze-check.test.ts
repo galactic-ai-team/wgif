@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { auditChecklist, auditEvidence } from '../scripts/freeze-check.js';
+import { auditChecklist, auditEvidence, optionalManifestRequires } from '../scripts/freeze-check.js';
 
 describe('v0.1.0 release preflight fail-closed contracts', () => {
+  it('allows absent requires[] but rejects malformed capability declarations', () => {
+    expect(optionalManifestRequires({ entry: { scene: 'scene/court.glb' } })).toEqual([]);
+    expect(optionalManifestRequires({ requires: ['scene.glb'] })).toEqual(['scene.glb']);
+    expect(optionalManifestRequires({ requires: 'scene.glb' })).toBeNull();
+    expect(optionalManifestRequires({ requires: ['scene.glb', 7] })).toBeNull();
+    expect(optionalManifestRequires(null)).toBeNull();
+  });
   it('rejects incomplete and newly added undocumented checklist gates', () => {
     expect(auditChecklist('- [ ] **Owner decision:** pending')).not.toEqual([]);
     const labels = [
