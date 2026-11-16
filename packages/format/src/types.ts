@@ -73,6 +73,8 @@ export interface LayerEntry {
 export interface Provenance {
   parent?: { id: string; signingHash: string };
   generator?: string;
+  /** Generator parameters as arbitrary JSON properties; included in creator signing hash. */
+  params?: Record<string, unknown>;
   history?: { action: string; at: string; by?: string; note?: string }[];
 }
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import {
-  packWgif, unpackWgif, utf8, validateManifestSchema,
+  packWgif, signingHash, unpackWgif, utf8, validateManifestSchema,
   type ModelEntry, type WgifFiles,
 } from '../src/index.js';
 
@@ -83,5 +83,38 @@ describe('Nova model descriptors integrated into hardened RC1 validator', () => 
     const manifest = await read('manifest.v0.1.schema.json');
     const { $id: _id, $schema: _schema, ...body } = descriptor;
     expect((manifest.definitions as Record<string, unknown>).modelDescriptor).toEqual(body);
+  });
+});
+
+// Provenance parameters are permitted before v0.1 freeze and are part of the signed view.
+describe('provenance.params in v0.1', () => {
+  it('accepts and round-trips arbitrary nested JSON parameters, including them in the signing hash', async () => {
+    const fixture = await readFile(new URL('../../../tests/fixtures/good-minimal.wgif', import.meta.url));
+    const base = await unpackWgif(new Uint8Array(fixture));
+    const params = {
+      seed: 7, generatorMode: 'procedural', dimensions: [16, 8],
+      options: { textures: true, density: 0.25, unused: null },
+    };
+    const packed = await packWgif({
+      ...base.manifest, provenance: { generator: 'wgif-worldgen', params },
+    }, base.files);
+    const result = await unpackWgif(packed);
+    expect(result.report.ok).toBe(true);
+    expect(result.manifest.provenance?.params).toEqual(params);
+    const changed = { ...result.manifest, provenance: {
+      ...result.manifest.provenance, params: { ...params, seed: 8 },
+    } };
+    expect(await signingHash(result.manifest)).not.toBe(await signingHash(changed));
+  });
+
+  it('rejects non-object provenance.params (null, array or scalar)', async () => {
+    const fixture = await readFile(new URL('../../../tests/fixtures/good-minimal.wgif', import.meta.url));
+    const base = await unpackWgif(new Uint8Array(fixture));
+    for (const params of [null, [], 7, 'text', false]) {
+      const errors = validateManifestSchema({ ...base.manifest, provenance: { params } });
+      expect(errors).toContainEqual(expect.objectContaining({
+        code: 'schema.type', path: '/provenance/params',
+      }));
+    }
   });
 });
