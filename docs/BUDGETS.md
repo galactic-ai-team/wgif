@@ -134,6 +134,8 @@ while landing a known-large change, and flip it back in the same PR).
 |---|---|
 | `world.glb` | quantize + meshopt (see `docs/ASSET-COMPRESSION.md`) |
 | `preview.png` | resize to ≤ 1024², re-encode; consider WebP |
+| uncompressed total | almost certainly a zip bomb or an unbounded entry. Check the largest expanded entry; a well-behaved world cannot exceed 16 MiB from a 1 MiB container |
+| compression ratio | the flagged entry (≥ 4 KiB stored) is padding, a placeholder, or hostile. Re-pack as real data, or drop it |
 | player **initial** JS | check the biggest initial chunk in the report; usually ajv, or a lazy dependency imported eagerly. Move it behind `import()` — it becomes deferred and stops counting against 300 KiB |
 | a single deferred chunk | if it exceeds 512 KiB, check whether the same file is also being pulled into the initial graph. If it is, split the shared code out before the lazy chunk grows further |
 | runtime WASM/models | Phase One forbids this outright. Either drop the feature or propose a Phase Two budget line and get it approved; do not just bump the number |
