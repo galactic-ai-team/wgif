@@ -5,7 +5,7 @@ import { Hud } from './hud.js';
 import { BallReturnAgent } from './sim/agents.js';
 import type { RuntimeEvent, WorldRuntime } from './sim/runtime.js';
 import { WorldViewer, type ControlMode } from './viewer.js';
-import { WorldOpenError, formatBytes, loadDocument, openWorld, type WorldDocument } from './world.js';
+import { WorldOpenError, describeMode, describeTrust, formatBytes, loadDocument, openWorld, type WorldDocument } from './world.js';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const li = (text: string, className = ''): HTMLLIElement => Object.assign(document.createElement('li'), { textContent: text, className });
@@ -109,9 +109,29 @@ function renderInfo(): void {
   const badge = $('badge');
   badge.textContent = m.mode;
   badge.className = `badge ${m.mode}`;
+  const trust = describeTrust(doc.world);
   const sig = $('sig');
-  sig.textContent = report.signature === 'absent' ? 'unsigned' : `signature ${report.signature}`;
-  sig.className = `badge ${report.signature}`;
+  sig.textContent = trust.label;
+  sig.className = `badge ${trust.tone === 'absent' ? '' : trust.tone}`;
+  $('trust').textContent = trust.detail;
+  $('mode-note').textContent = describeMode(doc);
+
+  $('layers-box').hidden = doc.layers.length === 0;
+  $('layers').replaceChildren(
+    ...doc.layers.map((l) => {
+      const changes = l.file.add.length + l.file.move.length + l.file.remove.length;
+      return li(`${l.id} by ${l.author}${l.created ? ` · ${l.created.slice(0, 10)}` : ''} · ${l.ok ? `${changes} change${changes === 1 ? '' : 's'}` : 'unreadable'}`);
+    }),
+  );
+  // History and layer authors are what the file says about itself; no signature covers them (SPEC §8).
+  const history = m.provenance?.history ?? [];
+  const parent = m.provenance?.parent;
+  $('history-box').hidden = history.length === 0 && !parent;
+  $('history').replaceChildren(
+    ...(parent ? [li(`Changed from ${parent.id} (signed version ${parent.signingHash.slice(0, 10)}…)`)] : []),
+    ...history.map((h) => li(`${h.at.slice(0, 16).replace('T', ' ')} · ${h.action}${h.by ? ` by ${h.by}` : ''}${h.note ? `: ${h.note}` : ''}`)),
+    li('As recorded in the file; not covered by a signature.', 'muted'),
+  );
   $('issues').replaceChildren(...report.warnings.map((w) => li(w.message, 'warning')), ...session.warnings.map((w) => li(w, 'warning')));
   $('files').replaceChildren(...m.files.map((f) => li(`${f.path} — ${formatBytes(f.size)}`)));
 
@@ -161,6 +181,7 @@ async function openBytes(bytes: Uint8Array, name: string): Promise<void> {
     session = { doc, npc: await createRebounder(world), props: new Set(), warnings: [] };
     await mount(doc);
     $('empty').hidden = true;
+    $('refused').hidden = true;
     controls.setEnabled(viewer.mode === 'walk');
     setHint();
     syncButtons();
@@ -169,7 +190,22 @@ async function openBytes(bytes: Uint8Array, name: string): Promise<void> {
   } catch (e) {
     const err = e as WorldOpenError;
     showError(`${name}: ${err.message}`, err.details ?? []);
+    if (err.preview) showRefused(name, err);
   }
+}
+
+/** A world this player cannot run still shows its preview, and says what is missing. */
+function showRefused(name: string, err: WorldOpenError): void {
+  if (!err.preview || viewer?.runtime) return;
+  const img = $<HTMLImageElement>('refused-preview');
+  if (previewUrl) URL.revokeObjectURL(previewUrl);
+  previewUrl = URL.createObjectURL(new Blob([err.preview.bytes as Uint8Array<ArrayBuffer>], { type: err.preview.mediaType }));
+  img.src = previewUrl;
+  img.hidden = false;
+  $('refused-title').textContent = `${name} needs a newer player`;
+  $('refused-detail').textContent = `${err.message}: ${err.details.map((d) => d.replace(/^requires: /, '')).join(', ')}. This is its preview.`;
+  $('empty').hidden = true;
+  $('refused').hidden = false;
 }
 
 async function openFile(file: File): Promise<void> {
