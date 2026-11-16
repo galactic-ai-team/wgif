@@ -167,7 +167,7 @@ const SKIP_DIRS = new Set(['node_modules', '.git', 'coverage', '.vite', '.turbo'
 export function findFiles(root: string, match: (rel: string) => boolean): string[] {
   const out: string[] = []
   const walk = (dir: string, rel: string): void => {
-    let dirents
+    let dirents: Dirent[]
     try {
       dirents = readdirSync(dir, { withFileTypes: true })
     } catch {

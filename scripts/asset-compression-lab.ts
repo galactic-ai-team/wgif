@@ -15,7 +15,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { inflateRawSync } from 'node:zlib'
-import { gzipBytes, readZipDirectory } from './size-report'
+import { gzipBytes, readZipDirectory } from './size-report.js'
 
 export interface Variant {
   name: string

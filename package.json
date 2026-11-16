@@ -22,12 +22,16 @@
     "dev": "npm run dev --workspace @wgif/player",
     "size:report": "tsx scripts/size-report.ts",
     "lab:compression": "tsx scripts/asset-compression-lab.ts",
-    "gen:validator": "tsx scripts/gen-validator.ts"
+    "gen:validator": "tsx scripts/gen-validator.ts",
+    "typecheck:scripts": "tsc -p scripts/tsconfig.json"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@gltf-transform/extensions": "^4.5.1",
+    "@gltf-transform/functions": "^4.5.1",
     "@types/node": "^24.19.2",
     "eslint": "^10.15.0",
+    "meshoptimizer": "^0.20.0",
     "tsx": "^4.23.15",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.72.2",

@@ -4,6 +4,11 @@ Owner: Dee (OPTIMIZATION). Status: harness landed, **numbers pending a run** —
 `npm run lab:compression` prints the table below with real byte counts. The
 figures marked *EST* are published ranges, not measurements from this repo.
 
+> **Naming note (GPT-6's ruling, run 9):** the manifest field for declared
+> player capabilities is **`requires[]`**, not `requiredExtensions[]`. Any
+> earlier mention of `requiredExtensions` in this doc is superseded by the
+> **Capability declaration** section at the end of Q4.
+
 ## What we tested
 
 `scripts/asset-compression-lab.ts` rewrites the court's `world.glb` through:
@@ -49,8 +54,10 @@ reference world uncompressed so it stays trivially reproducible.
 - `EXT_meshopt_compression` — for a ~10–15 KiB gzip decoder it is the only
   technique that meaningfully moves a textured world under 1 MiB. Make it
   required for "Phase One compliant player". For this to be safe, the
-  manifest needs a **`requiredExtensions: string[]`** field so a player that
-  can't decode fails with a human message instead of a blank canvas.
+  manifest needs a declared-capability list so a player that can't decode
+  fails with a readable explanation instead of a blank canvas. Per GPT-6's
+  ruling that field is **`requires[]`** — see **Capability declaration**
+  immediately below.
 
 **MAY / v0.2:** `KHR_draco_mesh_compression`, `KHR_texture_basisu`. Both cost
 30–40% of the entire player JS budget for one format each. They only pay for
@@ -59,3 +66,32 @@ is 1 MiB.
 
 **Do not require, ever, in the base layer:** anything that needs a network
 fetch at runtime (external decoder CDNs). Offline is the product.
+
+### Capability declaration (`requires[]`) — GPT-6's ruling
+
+The manifest field for declared, mandatory player capabilities is
+**`requires[]`** (`string[]`). It supersedes any use of `requiredExtensions[]`
+in earlier drafts, schema comments and this document; anything still saying
+`requiredExtensions` is stale.
+
+Semantics that v0.1 players MUST implement:
+
+- **Block, don't degrade.** If a `.wgif` declares a capability in `requires[]`
+  that the player does not implement, the player MUST refuse to open the
+  world and MUST show a human-readable explanation naming the missing
+  capability (e.g. *"This world needs EXT_meshopt_compression, which this
+  player does not support."*). It MUST NOT render a partial or blank world.
+- **Fail early and specifically.** Detection happens at manifest-parse time,
+  before any heavy asset work. A single unknown entry blocks; missing
+  capabilities are not warnings.
+- **Case-sensitive identifiers.** Capability strings are exact extension
+  names (`EXT_meshopt_compression`, `KHR_mesh_quantization`, …). No fuzzy
+  match, no aliases.
+- **No silent auto-decode.** An unknown capability MUST NOT trigger fetching a
+  decoder at runtime. A network fetch required to open a world is a bug, not
+  a feature — offline is the product.
+
+For the WASM-decoder case this means a meshopt world opened in a player
+without meshopt support shows an error card naming `EXT_meshopt_compression`,
+not a black canvas. That is what makes it safe to keep
+`EXT_meshopt_compression` on the MUST list above.

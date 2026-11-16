@@ -32,6 +32,9 @@ jobs:
         run: npm test
       - name: Build (library, sample world, player)
         run: npm run build
+      - name: Typecheck scripts
+        run: npm run typecheck:scripts
+
       - name: Size report
         run: npm run size:report -- --strict --summary "$GITHUB_STEP_SUMMARY"
       - name: Sample world is reproducible and committed
