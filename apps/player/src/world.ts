@@ -1,7 +1,15 @@
 import { unpackWgif, type WgifWorld } from '@wgif/format';
 
 /** Capabilities actually implemented by this player, not merely known to the WGIF spec. */
-const PLAYER_CAPABILITIES = new Set(['scene.glb', 'interaction.camera']);
+const PLAYER_CAPABILITIES = new Set([
+  'scene.glb',
+  'interaction.camera',
+  // @wgif/ai ships the rules runtime (rebounder NPC); the court requires it.
+  // 'runtime.onnx' is deliberately NOT listed: the player runs ONNX models
+  // only through the JS MLP evaluator for small MLPs, not arbitrary graphs,
+  // and the court does not require it (rules fallback).
+  'runtime.rules',
+]);
 
 export class WorldOpenError extends Error {
   constructor(message: string, public details: string[] = []) {
