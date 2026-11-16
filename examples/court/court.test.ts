@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { inflateSync } from 'node:zlib';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { buildReproducibleCourtArtifacts } from './src/pack-court.js';
-import { zlibCompressDeterministic } from './src/prng.js';
+import { encodeDeterministicPng, zlibCompressDeterministic } from './src/prng.js';
 import { buildWorldFromImage } from '../../tools/img2world/src/img2world.js';
+import { decodePngToRgba } from '../../tools/img2world/src/png-decode.js';
+import { runCli } from '../../tools/img2world/src/cli.js';
 
 function inspectFirstZipEntry(zipBytes: Uint8Array): {
   name: string;
@@ -28,7 +33,7 @@ function inspectFirstZipEntry(zipBytes: Uint8Array): {
   return { name, method, compressedSize, uncompressedSize, payload };
 }
 
-describe('Phase 1 World Generation — Strict GPT-6 v0.1 RC1 Schema Compliance', () => {
+describe('Phase 1 World Generation — WGIF v0.1 Schema & Offline PNG Input', () => {
   it('compresses deterministically with browser-safe zlib and round-trips via standard inflate', () => {
     const sample = new TextEncoder().encode(
       'WGIF-court-plank-repeat-pattern-WGIF-court-plank-repeat-pattern-1234567890'
@@ -48,7 +53,7 @@ describe('Phase 1 World Generation — Strict GPT-6 v0.1 RC1 Schema Compliance',
     expect(Buffer.compare(run1.wgifBytes, run2.wgifBytes)).toBe(0);
   });
 
-  it('emits only allowed v0.1 RC1 provenance keys (parent, generator, params, history) and stores manifest.json FIRST with method=0', () => {
+  it('emits v0.1 provenance keys (parent, generator, params, history) and stores manifest.json FIRST with method=0', () => {
     const { manifest, wgifBytes } = buildReproducibleCourtArtifacts();
 
     expect(typeof manifest.creator).toBe('object');
@@ -62,7 +67,6 @@ describe('Phase 1 World Generation — Strict GPT-6 v0.1 RC1 Schema Compliance',
       expect(typeof f.mediaType).toBe('string');
     }
 
-    // Strict check: no additional properties on provenance outside ['parent', 'generator', 'params', 'history']
     const allowedProvKeys = new Set(['parent', 'generator', 'params', 'history']);
     for (const k of Object.keys(manifest.provenance)) {
       expect(allowedProvKeys.has(k)).toBe(true);
@@ -110,7 +114,7 @@ describe('Phase 1 World Generation — Strict GPT-6 v0.1 RC1 Schema Compliance',
     expect(previewGif.byteLength).toBeLessThanOrEqual(256 * 1024);
   });
 
-  it('generates a displaced 3D world .wgif from a single RGB image with strict RC1 provenance keys', async () => {
+  it('generates a displaced 3D world .wgif from a single RGB image with v0.1 provenance', async () => {
     const w = 32;
     const h = 24;
     const rgba = new Uint8Array(w * h * 4);
@@ -144,5 +148,45 @@ describe('Phase 1 World Generation — Strict GPT-6 v0.1 RC1 Schema Compliance',
     const first = inspectFirstZipEntry(res.wgifBytes);
     expect(first.name).toBe('manifest.json');
     expect(first.method).toBe(0);
+  });
+
+  it('decodes a real PNG via decodePngToRgba and builds a .wgif via cli --input', async () => {
+    const w = 24;
+    const h = 18;
+    const srcRgba = new Uint8Array(w * h * 4);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const idx = (y * w + x) * 4;
+        srcRgba[idx] = (x * 11) & 0xff;
+        srcRgba[idx + 1] = (y * 13) & 0xff;
+        srcRgba[idx + 2] = ((x + y) * 7) & 0xff;
+        srcRgba[idx + 3] = 255;
+      }
+    }
+
+    const pngBytes = encodeDeterministicPng(w, h, srcRgba);
+    const decoded = decodePngToRgba(pngBytes);
+    expect(decoded.width).toBe(w);
+    expect(decoded.height).toBe(h);
+    expect(Buffer.compare(decoded.rgba, srcRgba)).toBe(0);
+
+    const tmpDir = mkdtempSync(join(tmpdir(), 'wgif-img2world-'));
+    try {
+      const inPng = join(tmpDir, 'input.png');
+      const outWgif = join(tmpDir, 'out.wgif');
+      writeFileSync(inPng, pngBytes);
+
+      await runCli(['--input', inPng, '--output', outWgif, '--synthetic-depth']);
+
+      const builtBytes = new Uint8Array(readFileSync(outWgif));
+      const first = inspectFirstZipEntry(builtBytes);
+      expect(first.name).toBe('manifest.json');
+      expect(first.method).toBe(0);
+      const manifest = JSON.parse(new TextDecoder().decode(first.payload));
+      expect(manifest.wgif).toBe('0.1');
+      expect(manifest.provenance.params.input_dimensions).toEqual([w, h]);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
