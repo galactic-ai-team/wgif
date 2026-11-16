@@ -19,7 +19,7 @@
  * Exit code 1 when any budget is exceeded (unless --soft).
  */
 import { createHash } from 'node:crypto'
-import { appendFileSync, existsSync, readFileSync, readdirSync } from 'node:fs'
+import { appendFileSync, existsSync, readFileSync, readdirSync, type Dirent } from 'node:fs'
 import path from 'node:path'
 import { brotliCompressSync, constants as zlibConstants, gzipSync } from 'node:zlib'
 

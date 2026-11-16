@@ -29,8 +29,8 @@ export function findSchema(root: string): string | null {
 }
 
 export async function generate(root: string, schemaRel: string): Promise<string> {
-  const Ajv2020 = (await import('ajv/dist/2020.js')).default
-  const standaloneCode = (await import('ajv/dist/standalone/index.js')).default
+  const Ajv2020 = (await import('ajv/dist/2020.js')).default.default
+  const standaloneCode = (await import('ajv/dist/standalone/index.js')).default.default
 
   const schema = JSON.parse(readFileSync(path.join(root, schemaRel), 'utf8')) as object
   const ajv = new Ajv2020({ allErrors: true, strict: false, code: { source: true, esm: true } })
@@ -50,7 +50,7 @@ export async function generate(root: string, schemaRel: string): Promise<string>
 async function main(argv: string[]): Promise<number> {
   const root = process.cwd()
   const outIdx = argv.indexOf('--out')
-  const outRel = outIdx >= 0 ? argv[outIdx + 1] : DEFAULT_OUT
+  const outRel = (outIdx >= 0 ? argv[outIdx + 1] : undefined) ?? DEFAULT_OUT
   const schemaRel = findSchema(root)
   if (!schemaRel) {
     console.error(

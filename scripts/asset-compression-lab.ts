@@ -118,7 +118,7 @@ export async function runLab(root: string, relInput: string): Promise<Variant[]>
     }
   }
 
-  await doc.transform(dedup(), weld({ tolerance: 0 }), prune())
+  await doc.transform(dedup(), weld(), prune())
   await measure('weld+dedup+prune', 'index sharing, unused data removed')
 
   await doc.transform(quantize({ quantizePosition: 14, quantizeNormal: 10, quantizeTexcoord: 12 }))
@@ -164,7 +164,7 @@ async function main(argv: string[]): Promise<number> {
   const root = process.cwd()
   const json = argv.includes('--json')
   const inputIdx = argv.indexOf('--input')
-  const explicit = inputIdx >= 0 ? argv[inputIdx + 1] : null
+  const explicit = inputIdx >= 0 ? (argv[inputIdx + 1] ?? null) : null
   const input = resolveInput(root, explicit)
   if (!input) {
     console.log(

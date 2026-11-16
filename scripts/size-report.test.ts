@@ -12,7 +12,7 @@ import {
   renderMarkdown,
   type Budgets,
   type SizeReport,
-} from './size-report'
+} from './size-report.js'
 
 /** Minimal stored-only (method 0) ZIP writer, enough to exercise the reader. */
 function makeStoredZip(entries: { name: string; data: Uint8Array }[]): Uint8Array {
@@ -98,10 +98,10 @@ describe('readZipDirectory', () => {
     ])
     const entries = readZipDirectory(zip)
     expect(entries.map((e) => e.name)).toEqual(['manifest.json', 'preview.png'])
-    expect(entries[0].expandedBytes).toBe(7)
-    expect(entries[0].storedBytes).toBe(7)
-    expect(entries[0].method).toBe(0)
-    expect(entries[1].expandedBytes).toBe(64)
+    expect(entries[0]?.expandedBytes).toBe(7)
+    expect(entries[0]?.storedBytes).toBe(7)
+    expect(entries[0]?.method).toBe(0)
+    expect(entries[1]?.expandedBytes).toBe(64)
   })
 
   it('rejects garbage', () => {
