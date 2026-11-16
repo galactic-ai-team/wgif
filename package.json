@@ -19,7 +19,8 @@
     "test": "npm run test --workspaces --if-present",
     "build": "npm run build --workspaces --if-present",
     "pack:court": "npm run pack --workspace @wgif/example-court",
-    "dev": "npm run dev --workspace @wgif/player"
+    "dev": "npm run dev --workspace @wgif/player",
+    "img2world": "tsx tools/img2world/src/cli.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
