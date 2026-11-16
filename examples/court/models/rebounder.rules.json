@@ -1,0 +1,120 @@
+{
+    "court": {
+        "bounds": {
+            "max": [
+                17,
+                0,
+                10
+            ],
+            "min": [
+                -17,
+                0,
+                -10
+            ]
+        }
+    },
+    "description": "Court rebounder NPC: chases a loose ball, picks it up, carries it to the player and passes it back. Declarative state machine, interpreted by @wgif/ai (packages/ai). Deterministic: no randomness, no wall-clock time; transitions are evaluated in file order, first match wins.",
+    "deterministic": true,
+    "initialState": "idle",
+    "model": "rebounder",
+    "params": {
+        "arriveRadius": 0.05,
+        "carrySpeed": 3.5,
+        "chaseSpeed": 5.0,
+        "home": [
+            0,
+            0,
+            6
+        ],
+        "passRadius": 1.6,
+        "pickupRadius": 0.45,
+        "returnSpeed": 1.5
+    },
+    "seed": 7,
+    "states": {
+        "carry": {
+            "behavior": {
+                "speed": "carrySpeed",
+                "target": "player",
+                "type": "move"
+            },
+            "description": "Carry the ball to the player. holdingBall is true in this state.",
+            "on": [
+                {
+                    "to": "idle",
+                    "when": "ball_held_by_player"
+                },
+                {
+                    "to": "pass",
+                    "when": "near_player"
+                }
+            ]
+        },
+        "chase": {
+            "behavior": {
+                "speed": "chaseSpeed",
+                "target": "ball",
+                "type": "move"
+            },
+            "description": "Run to the loose ball. A ball the player already holds, or one that rolled out of bounds, is not ours to chase.",
+            "on": [
+                {
+                    "to": "idle",
+                    "when": "ball_held_by_player"
+                },
+                {
+                    "to": "pickup",
+                    "when": "ball_near"
+                },
+                {
+                    "to": "idle",
+                    "when": "ball_out_of_bounds"
+                }
+            ]
+        },
+        "idle": {
+            "behavior": {
+                "speed": "returnSpeed",
+                "target": "home",
+                "type": "move"
+            },
+            "description": "Wait at home (or walk back to it). A loose ball starts the chase.",
+            "on": [
+                {
+                    "to": "carry",
+                    "when": "ball_held_by_self"
+                },
+                {
+                    "to": "chase",
+                    "when": "ball_loose"
+                }
+            ]
+        },
+        "pass": {
+            "behavior": {
+                "type": "pass"
+            },
+            "description": "Pass the ball back to the player. passBall is true on this tick only.",
+            "on": [
+                {
+                    "to": "idle",
+                    "when": "always"
+                }
+            ]
+        },
+        "pickup": {
+            "behavior": {
+                "type": "hold"
+            },
+            "description": "One tick to pick the ball up, then carry it. holdingBall is true in this state.",
+            "on": [
+                {
+                    "to": "carry",
+                    "when": "always"
+                }
+            ]
+        }
+    },
+    "tickHz": 10,
+    "version": "0.1-draft"
+}
