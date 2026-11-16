@@ -62,13 +62,16 @@ describe('Phase 1 World Generation — Strict GPT-6 v0.1 RC1 Schema Compliance',
       expect(typeof f.mediaType).toBe('string');
     }
 
-    // Strict check: no additional properties on provenance outside ['parent', 'generator', 'history']
-    const allowedProvKeys = new Set(['parent', 'generator', 'history']);
+    // Strict check: no additional properties on provenance outside ['parent', 'generator', 'params', 'history']
+    const allowedProvKeys = new Set(['parent', 'generator', 'params', 'history']);
     for (const k of Object.keys(manifest.provenance)) {
       expect(allowedProvKeys.has(k)).toBe(true);
     }
-    expect(manifest.provenance.generator).toContain('@wgif/court-builder@0.1.0');
-    expect(manifest.provenance.generator).toContain('seed=1464289606');
+    expect(manifest.provenance.generator).toBe('@wgif/court-builder@0.1.0');
+    expect(manifest.provenance.params).toEqual({
+      origin: 'procedural',
+      seed: 1464289606,
+    });
 
     expect('camera' in manifest).toBe(false);
     expect(manifest.spawn).toEqual({
@@ -85,7 +88,7 @@ describe('Phase 1 World Generation — Strict GPT-6 v0.1 RC1 Schema Compliance',
     expect(Object.keys(parsed.provenance)).toEqual(['generator', 'params']);
     expect(parsed.provenance.params).toEqual({
       origin: 'procedural',
-      seed: 1464293702,
+      seed: 1464289606,
     });
   });
 
