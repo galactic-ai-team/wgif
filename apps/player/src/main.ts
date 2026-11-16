@@ -24,6 +24,8 @@ const hint = $('hint');
 const toast = $('toast');
 const byInput = $<HTMLInputElement>('by');
 const perfBox = new URLSearchParams(location.search).has('perf') ? $('perf') : null;
+/** `?npc=onnx` opts into the ONNX clone driving the rebounder (JS MLP, no WASM); the default is the rules model, and the rules twin stays the fallback on any load or evaluation failure. */
+const npcOnnx = new URLSearchParams(location.search).get('npc') === 'onnx';
 
 /** Everything that belongs to the world that is open right now. */
 interface Session {
@@ -245,7 +247,7 @@ async function openBytes(bytes: Uint8Array, name: string): Promise<void> {
     viewer.hooks.onFrame = onFrame;
     if (editing) setEditing(false);
     hud.hideResult();
-    session = { doc, saver, edits: new EditSession(), npc: await createRebounder(world), props: new Set(), warnings: [], lastExport: null };
+    session = { doc, saver, edits: new EditSession(), npc: await createRebounder(world, { preferOnnx: npcOnnx }), props: new Set(), warnings: [], lastExport: null };
     // Unsaved edits from last time come back, but only on the exact version they were made on.
     const draft = doc.policy.canEdit && draftFits(saved?.draft, layerIds(doc)) ? saved?.draft : undefined;
     if (draft) session.edits.restore(draft.ops);
