@@ -1,11 +1,13 @@
-import { createNpcHookFromModel, type NpcAction, type NpcModel } from '@wgif/ai';
+import { packWgif, unpackWgif } from '@wgif/format';
+import { createNpcHookFromModel, loadModelFromWorld, type NpcAction, type NpcModel } from '@wgif/ai';
 import { describe, expect, it } from 'vitest';
 import { RebounderAgent, createRebounder } from '../src/ai.js';
 import { BallReturnAgent } from '../src/sim/agents.js';
 import { GRAVITY } from '../src/sim/ball.js';
 import { MAX_SHOT_SPEED, MIN_SHOT_SPEED, type RuntimeEvent, type WorldRuntime } from '../src/sim/runtime.js';
 import type { Vec3 } from '../src/sim/vec.js';
-import { open } from './helpers.js';
+import { courtBytes, open } from './helpers.js';
+import { courtVariant } from './worlds.js';
 
 const HOME: Vec3 = [12.425, 3.05, 0];
 const FREE_THROW: Vec3 = [8.2, 1.7, 0];
@@ -27,6 +29,26 @@ async function courtWithNpc() {
   opened.runtime.setAgent('ball-return');
   opened.runtime.setAgent(npc);
   return { ...opened, npc };
+}
+
+/** The live mount() wiring: the NPC first, then the 7s safety net. */
+async function courtLive() {
+  const opened = await open();
+  const npc = await createRebounder(opened.doc.world);
+  if (!npc) throw new Error('the court has no rebounder');
+  opened.runtime.setAgent(npc);
+  opened.runtime.setAgent(new BallReturnAgent(7));
+  return { ...opened, npc };
+}
+
+/** The court with the ONNX model listed first and its bytes corrupt, so only the rules fallback can run. */
+async function brokenOnnxFirstCourt(): Promise<Uint8Array> {
+  const world = await unpackWgif(courtBytes());
+  world.manifest.models = [...(world.manifest.models ?? [])].reverse();
+  return packWgif(world.manifest, {
+    ...world.files,
+    'models/rebounder-mlp.onnx': new Uint8Array(100),
+  });
 }
 
 /** One 60 fps frame: two fixed ticks, then let the model's pending step land, as in the browser. */
@@ -169,5 +191,123 @@ describe('rebounder NPC (the court model through @wgif/ai)', () => {
       return { seconds, states, npc: [...npc.body.position], ball: [...runtime.objects.get('ball')!.body.pos] };
     };
     expect(await play()).toEqual(await play());
+  });
+
+  it('returns the ball through the NPC, not the safety net, with the live mount wiring', async () => {
+    // The safety net fires 7s after the ball goes dead; if it ever beats the
+    // NPC to a return, the NPC never reaches carry/pass and the return takes
+    // ~7s. The NPC's worst standard fetch (a far miss) takes ~6.1s.
+    for (const [label, shoot] of [
+      ['made shot', (r: WorldRuntime) => r.shoot(aim(r, FREE_THROW, HOME))],
+      ['far miss', (r: WorldRuntime) => r.shoot(aim(r, [9, 1.7, -4], HOME, 0.85))],
+    ] as const) {
+      const { runtime, npc } = await courtLive();
+      await tipOff(runtime, npc);
+      shoot(runtime);
+      const { seconds, states } = await untilReturned(runtime, npc);
+      expect(runtime.held, label).toBe('ball');
+      expect(states, label).toEqual(expect.arrayContaining(['chase', 'pickup', 'carry', 'pass']));
+      expect(seconds, label).toBeLessThan(7);
+    }
+  });
+
+  it('falls back to rules through the adapter when the ONNX model cannot load', async () => {
+    const bytes = await brokenOnnxFirstCourt();
+    const check = await unpackWgif(bytes);
+    expect(check.report.errors).toEqual([]);
+    expect(check.manifest.models?.[0]?.id).toBe('rebounder-mlp');
+    const opened = await open(bytes);
+    const npc = await createRebounder(opened.doc.world);
+    expect(npc).not.toBeNull();
+    expect(npc!.info).toMatchObject({ runtime: 'rules', usedFallback: true });
+    opened.runtime.setAgent(npc!);
+    opened.runtime.setAgent(new BallReturnAgent(7));
+    await tipOff(opened.runtime, npc!);
+    opened.runtime.shoot(aim(opened.runtime, FREE_THROW, HOME));
+    const { seconds, states } = await untilReturned(opened.runtime, npc!);
+    expect(opened.runtime.held).toBe('ball');
+    expect(states).toEqual(expect.arrayContaining(['chase', 'pickup', 'carry', 'pass']));
+    expect(seconds).toBeLessThan(7);
+  });
+});
+
+describe('rebounder NPC on the ONNX model (opt-in, ?npc=onnx)', () => {
+  /** The court with the ONNX clone driving the NPC (no built-in ball return). */
+  async function courtWithNpcOnnx() {
+    const opened = await open();
+    const npc = await createRebounder(opened.doc.world, { preferOnnx: true });
+    if (!npc) throw new Error('the court has no rebounder');
+    opened.runtime.setAgent('ball-return');
+    opened.runtime.setAgent(npc);
+    return { ...opened, npc };
+  }
+
+  it('fetches a missed shot and passes it back on the ONNX model', async () => {
+    const { runtime, npc } = await courtWithNpcOnnx();
+    expect(npc.info.runtime).toBe('onnx');
+    expect(npc.info.usedFallback).toBe(false);
+    await tipOff(runtime, npc);
+    runtime.shoot(aim(runtime, FREE_THROW, HOME, 0.97));
+    const { seconds, states } = await untilReturned(runtime, npc);
+    expect(runtime.held).toBe('ball');
+    // The ONNX model has no separate 'pickup' state — it goes chase → carry
+    // when the ball is within reach (the pickup decision), then passes.
+    expect(states).toContain('chase');
+    expect(states).toContain('carry');
+    expect(states).toContain('pass');
+    expect(seconds).toBeLessThan(7);
+    expect(npc.info.runtime).toBe('onnx');
+  });
+
+  it('falls back to rules when the preferred ONNX file cannot load, and still fetches', async () => {
+    const opened = await open(await courtVariant({ files: { 'models/rebounder-mlp.onnx': new Uint8Array(100) } }));
+    const npc = await createRebounder(opened.doc.world, { preferOnnx: true });
+    if (!npc) throw new Error('the court has no rebounder');
+    expect(npc.info.runtime).toBe('rules');
+    expect(npc.info.usedFallback).toBe(true);
+    opened.runtime.setAgent('ball-return');
+    opened.runtime.setAgent(npc);
+    await tipOff(opened.runtime, npc);
+    opened.runtime.shoot(aim(opened.runtime, FREE_THROW, HOME, 0.97));
+    const { seconds, states } = await untilReturned(opened.runtime, npc);
+    expect(opened.runtime.held).toBe('ball');
+    expect(states).toContain('pass');
+    expect(seconds).toBeLessThan(7);
+  });
+
+  it('swaps to rules mid-game when the ONNX model fails during evaluation, and still fetches', async () => {
+    const { doc, runtime } = await open();
+    // Loose ball, placed out on the court (no shot: the shot's bounce is not a reliable fetch setup).
+    const ball = runtime.objects.get('ball')!;
+    ball.body.pos[0] = 11; ball.body.pos[1] = 0.12; ball.body.pos[2] = 3;
+    ball.body.resting = false;
+    runtime.player.spawn(FREE_THROW, HOME);
+    let calls = 0;
+    const throwing: NpcModel = {
+      id: 'throwing-onnx',
+      runtime: 'onnx',
+      state: 'idle',
+      descriptor: {} as NpcModel['descriptor'],
+      reset() {},
+      async update(): Promise<NpcAction> {
+        if (++calls > 2) throw new Error('onnx eval exploded');
+        return { state: 'chase', velocity: [1, 0, 0], passBall: false, holdingBall: false, target: null };
+      },
+    };
+    const hook = createNpcHookFromModel(throwing, 10, { runtime: 'onnx' }, {
+      loadFallback: () => loadModelFromWorld(doc.world, 'rebounder', { preferRuntime: 'rules' }),
+    });
+    const npc = new RebounderAgent(hook, [0, 0, 6]);
+    runtime.setAgent(npc);
+    expect(npc.info.runtime).toBe('onnx');
+    const { seconds, states } = await untilReturned(runtime, npc);
+    expect(runtime.held).toBe('ball');
+    expect(npc.failed).toBeNull();
+    expect(npc.info.runtime).toBe('rules');
+    expect(npc.info.usedFallback).toBe(true);
+    expect(states).toContain('pickup');
+    expect(states).toContain('carry');
+    expect(states).toContain('pass');
+    expect(seconds).toBeLessThan(7);
   });
 });

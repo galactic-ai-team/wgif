@@ -48,7 +48,7 @@ describe('creator modes', () => {
     expect(doc.policy).toEqual({ canEdit: true, via: 'layer' });
     expect(describeMode(doc)).toMatch(/^Layered/);
     expect(doc.world.report.signature).toBe('valid');
-    expect(describeTrust(doc.world).detail).toMatch(/Layers added since are not covered/);
+    expect(describeTrust(doc.world).detail).toMatch(/Layers are not covered by this signature/);
     expect(doc.layers).toMatchObject([{ id: 'l1', author: 'tester', ok: true }]);
   });
 

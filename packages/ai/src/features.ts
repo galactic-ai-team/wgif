@@ -36,6 +36,15 @@ export const ONNX_ACTION_FEATURES = ['vx', 'vz', 'pass_logit'] as const;
 export const ONNX_INPUT_NAME = 'obs';
 export const ONNX_OUTPUT_NAME = 'action';
 export const ONNX_MAX_SPEED = 6;
+/** Indices into the obs feature vector, by name — the evaluators read these instead of hardcoding positions. */
+export const ONNX_OUT_OF_BOUNDS_IDX = ONNX_OBS_FEATURES.indexOf('ball_out_of_bounds');
+export const ONNX_DIST_TO_BALL_IDX = ONNX_OBS_FEATURES.indexOf('dist_to_ball');
+/**
+ * Pickup reach (m) for the ONNX evaluators' pickup decision, matching the
+ * rules model's default (rules.ts). The loader passes the rules twin's
+ * `pickupRadius` when the world has one; this is the no-twin default.
+ */
+export const ONNX_PICKUP_RADIUS_M = 0.45;
 /**
  * Speed dead-zone (m/s). The network's output noise floor is ~0.1-0.4 m/s, so
  * below this the NPC is effectively stationary — the same idea as the rules

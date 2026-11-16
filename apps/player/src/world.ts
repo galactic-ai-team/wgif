@@ -1,6 +1,6 @@
 import { signingHash, unpackWgif, type Vec3, type WgifWorld } from '@wgif/format';
 import { applyEdits, layerOps, parseLayer, type EditOp, type LayerFile, type SceneOp } from './edit.js';
-import { isJson, parseGameState, parseInteractions, readJson, type GameState, type Interactions, type Json } from './interactions.js';
+import { isJson, parseGameState, parseInteractions, readJson, unsupportedStateFields, type GameState, type Interactions, type Json } from './interactions.js';
 
 /** Capabilities actually implemented by this player, not merely known to the WGIF spec. */
 const PLAYER_CAPABILITIES = new Set([
@@ -11,8 +11,9 @@ const PLAYER_CAPABILITIES = new Set([
   // only through the JS MLP evaluator for small MLPs, not arbitrary graphs,
   // and the court does not require it (rules fallback).
   'runtime.rules',
-  // The world runtime in src/sim/: grabbing, cylinder triggers (enterFromAbove),
-  // the Shootout, and the initial game-state.json seed.
+  // The world runtime in src/sim/: grabbing, cylinder triggers (on.enterFromAbove, on.enter,
+  // and on.grab on grabbables, with the score / reset / activate events), the Shootout, and the
+  // initial game-state.json seed (high scores, plays, object positions; other fields are reported).
   'interaction.grab',
   'interaction.trigger',
   'minigame.basketball-shooting',
@@ -122,11 +123,25 @@ export async function loadDocument(world: WgifWorld): Promise<WorldDocument> {
     const parsed = parseLayer(readJson(files[entry.path]));
     layers.push({ id: entry.id, path: entry.path, author: entry.author, ...(entry.created ? { created: entry.created } : {}), file: parsed.layer, ok: parsed.ok });
     if (!parsed.ok) warnings.push(`layer "${entry.id}" could not be read and was skipped`);
-    else if (parsed.skipped > 0) warnings.push(`layer "${entry.id}": ${parsed.skipped} operation(s) could not be used and were skipped`);
+    else if (parsed.skipped > 0) {
+      warnings.push(`layer "${entry.id}": ${parsed.skipped} operation(s) could not be used and were skipped`);
+      for (const w of parsed.warnings) warnings.push(`layer "${entry.id}": ${w}`);
+    }
   }
   const hash = await signingHash(manifest);
-  const state = parseGameState(statePath ? readJson(files[statePath]) : null);
-  return resolve(world, isJson(rawInteractions) ? rawInteractions : null, state, layers, [], hash, warnings);
+  const rawState = statePath ? readJson(files[statePath]) : null;
+  const state = parseGameState(rawState);
+  const ignoredState = unsupportedStateFields(rawState);
+  if (ignoredState.length) warnings.push(`game-state: ${ignoredState.slice(0, 10).join(', ')}${ignoredState.length > 10 ? ` and ${ignoredState.length - 10} more` : ''} not applied by this player (kept in the file on export)`);
+  const doc = resolve(world, isJson(rawInteractions) ? rawInteractions : null, state, layers, [], hash, warnings);
+  // A world that declares triggers essential must not play with some of its trigger behaviour missing.
+  const unsupported = doc.interactions.unsupported;
+  if (unsupported.length && (manifest.requires ?? []).includes('interaction.trigger')) {
+    const error = new WorldOpenError('This world requires trigger behaviour this player does not support', unsupported.map((m) => `interaction.trigger: ${m}`));
+    error.preview = previewOf(world);
+    throw error;
+  }
+  return doc;
 }
 
 /** The same document with unsaved edits applied on top of its layers: what the editor shows. */
@@ -164,7 +179,7 @@ export function describeTrust(world: WgifWorld): { label: string; tone: 'valid' 
   const { manifest, report } = world;
   if (report.signature === 'valid') {
     const key = manifest.signature?.publicKey.slice(0, 12) ?? '';
-    const layered = (manifest.layers?.length ?? 0) > 0 ? ' Layers added since are not covered by it.' : '';
+    const layered = (manifest.layers?.length ?? 0) > 0 ? ' Layers are not covered by this signature.' : '';
     return {
       label: 'signature valid',
       tone: 'valid',
@@ -184,7 +199,7 @@ export function describeTrust(world: WgifWorld): { label: string; tone: 'valid' 
 /** One sentence on what the creator allows, shown next to the mode badge. */
 export function describeMode(doc: WorldDocument): string {
   const mode = doc.world.manifest.mode;
-  if (mode === 'locked') return 'Locked by its creator: explore and play. Nothing here can be changed or exported.';
+  if (mode === 'locked') return 'Locked: a creator policy, not DRM. This player honours it, so you can explore and play, but not change or export it here.';
   if (mode === 'layered') return 'Layered: changes are added as layers on top. The original world stays untouched.';
   return 'Editable: you can change it and export your own copy.';
 }

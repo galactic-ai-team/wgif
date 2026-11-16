@@ -20,8 +20,52 @@ export class CylinderTrigger {
 
   constructor(readonly id: string, readonly shape: CylinderShape) {}
 
-  reset(): void {
+  private inside = false;
+
+  /** Forgets any pass in progress. `at`, when given, is where the target now is (so `enters` does not fire for an object placed inside). */
+  reset(at?: Vec3): void {
     this.armed = false;
+    this.inside = at ? this.contains(at) : false;
+  }
+
+  /** Is the point inside the cylinder (faces included)? */
+  contains(p: Vec3): boolean {
+    const { center, radius, height } = this.shape;
+    const dx = p[0] - center[0], dz = p[2] - center[2];
+    return Math.abs(p[1] - center[1]) <= height / 2 && dx * dx + dz * dz <= radius * radius;
+  }
+
+  /**
+   * `enter` semantics: returns true when the segment prev → cur goes into the cylinder from
+   * outside, through any face. Staying inside does not fire again; leaving re-arms it. A segment
+   * that passes right through the volume within one step still counts.
+   */
+  enters(prev: Vec3, cur: Vec3): boolean {
+    const was = this.inside;
+    this.inside = this.contains(cur);
+    return !was && this.segmentHits(prev, cur);
+  }
+
+  /** Does the segment prev → cur touch the cylinder's volume anywhere? */
+  private segmentHits(prev: Vec3, cur: Vec3): boolean {
+    const { center, radius, height } = this.shape;
+    const top = center[1] + height / 2, bottom = center[1] - height / 2;
+    const dy = cur[1] - prev[1];
+    let t0 = 0, t1 = 1;
+    if (Math.abs(dy) < 1e-12) {
+      if (prev[1] < bottom || prev[1] > top) return false;
+    } else {
+      const ta = (bottom - prev[1]) / dy, tb = (top - prev[1]) / dy;
+      t0 = Math.max(0, Math.min(ta, tb));
+      t1 = Math.min(1, Math.max(ta, tb));
+      if (t0 > t1) return false;
+    }
+    const ax = prev[0] - center[0], az = prev[2] - center[2];
+    const dx = cur[0] - prev[0], dz = cur[2] - prev[2];
+    const dd = dx * dx + dz * dz;
+    const t = dd < 1e-12 ? t0 : Math.min(t1, Math.max(t0, -(ax * dx + az * dz) / dd));
+    const px = ax + dx * t, pz = az + dz * t;
+    return px * px + pz * pz <= radius * radius;
   }
 
   /** True while the target is inside after entering from above. */

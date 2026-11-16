@@ -71,44 +71,72 @@ const quat = (v: unknown): Quat | null =>
   Array.isArray(v) && v.length === 4 && v.every((n) => typeof n === 'number' && Number.isFinite(n)) && Math.hypot(...(v as number[])) > 1e-6 ? (v.slice() as Quat) : null;
 const list = (v: unknown): unknown[] => (Array.isArray(v) ? v.slice(0, MAX_OPS) : []);
 
-function parseAdd(raw: unknown): LayerAdd | null {
-  if (!isJson(raw) || !isId(raw.id)) return null;
+/** Why an operation was skipped, for the layer warning. Null fields mean "not given". */
+type Parsed<T> = { op: T; problem?: undefined } | { op: null; problem: string };
+
+const opName = (raw: unknown): string => (isJson(raw) && isId(raw.id) ? `"${raw.id}"` : '(no valid id)');
+
+/**
+ * Reads an `add`. An optional field that is present but unusable (a `size` this player cannot
+ * build, a bad `color`) skips the whole operation with a reason. It is never swapped for a default:
+ * the layer's author asked for something specific, and a different shape would misrepresent it.
+ */
+function readAdd(raw: unknown): Parsed<LayerAdd> {
+  if (!isJson(raw) || !isId(raw.id)) return { op: null, problem: `add ${opName(raw)}: needs a valid id` };
   const position = point(raw.position);
-  if (!position || (raw.primitive !== 'box' && raw.primitive !== 'sphere' && raw.primitive !== 'cylinder')) return null;
-  const size = extent(raw.size);
-  const color = typeof raw.color === 'string' && /^#[0-9A-Fa-f]{6}$/.test(raw.color) ? raw.color : null;
-  return { id: raw.id, primitive: raw.primitive, position, ...(size ? { size } : {}), ...(color ? { color } : {}) };
+  if (!position) return { op: null, problem: `add ${opName(raw)}: needs a position within ±1e6 m` };
+  if (raw.primitive !== 'box' && raw.primitive !== 'sphere' && raw.primitive !== 'cylinder') return { op: null, problem: `add ${opName(raw)}: primitive ${JSON.stringify(raw.primitive)} is not box, sphere or cylinder` };
+  const size = raw.size === undefined ? null : extent(raw.size);
+  if (raw.size !== undefined && !size) return { op: null, problem: `add ${opName(raw)}: size ${JSON.stringify(raw.size)} is not supported (each axis must be > 0 and ≤ ${SIZE_LIMIT} m)` };
+  const color = raw.color === undefined ? null : typeof raw.color === 'string' && /^#[0-9A-Fa-f]{6}$/.test(raw.color) ? raw.color : undefined;
+  if (color === undefined) return { op: null, problem: `add ${opName(raw)}: color ${JSON.stringify(raw.color)} is not #rrggbb` };
+  return { op: { id: raw.id, primitive: raw.primitive, position, ...(size ? { size } : {}), ...(color ? { color } : {}) } };
 }
 
-function parseMove(raw: unknown): LayerMove | null {
-  if (!isJson(raw) || !isId(raw.id)) return null;
+/** Reads a `move`. As with `add`, an unusable `rotation` or `scale` skips the operation rather than being dropped. */
+function readMove(raw: unknown): Parsed<LayerMove> {
+  if (!isJson(raw) || !isId(raw.id)) return { op: null, problem: `move ${opName(raw)}: needs a valid id` };
   const position = point(raw.position);
-  if (!position) return null;
-  const rotation = quat(raw.rotation), scale = extent(raw.scale);
-  return { id: raw.id, position, ...(rotation ? { rotation } : {}), ...(scale ? { scale } : {}) };
+  if (!position) return { op: null, problem: `move ${opName(raw)}: needs a position within ±1e6 m` };
+  const rotation = raw.rotation === undefined ? null : quat(raw.rotation);
+  if (raw.rotation !== undefined && !rotation) return { op: null, problem: `move ${opName(raw)}: rotation ${JSON.stringify(raw.rotation)} is not a usable quaternion` };
+  const scale = raw.scale === undefined ? null : extent(raw.scale);
+  if (raw.scale !== undefined && !scale) return { op: null, problem: `move ${opName(raw)}: scale ${JSON.stringify(raw.scale)} is not supported (each axis must be > 0 and ≤ ${SIZE_LIMIT})` };
+  return { op: { id: raw.id, position, ...(rotation ? { rotation } : {}), ...(scale ? { scale } : {}) } };
 }
 
-/** Reads a layer file. Never throws; operations it cannot use are counted in `skipped`. */
-export function parseLayer(raw: unknown): { layer: LayerFile; skipped: number; ok: boolean } {
+const parseAdd = (raw: unknown): LayerAdd | null => readAdd(raw).op;
+const parseMove = (raw: unknown): LayerMove | null => readMove(raw).op;
+
+/**
+ * Reads a layer file. Never throws; operations it cannot use are counted in `skipped`, and
+ * `warnings` says which ones and why (at most 20 lines).
+ */
+export function parseLayer(raw: unknown): { layer: LayerFile; skipped: number; ok: boolean; warnings: string[] } {
   const layer: LayerFile = { version: PAYLOAD_VERSION, add: [], move: [], remove: [] };
-  if (!isJson(raw)) return { layer, skipped: 0, ok: false };
+  const warnings: string[] = [];
+  if (!isJson(raw)) return { layer, skipped: 0, ok: false, warnings };
   if (typeof raw.version === 'string') layer.version = raw.version;
   let skipped = 0;
+  const skip = (problem: string): void => {
+    skipped++;
+    if (warnings.length < 20) warnings.push(problem);
+  };
   for (const item of list(raw.remove)) {
     if (isId(item)) layer.remove.push(item);
-    else skipped++;
+    else skip(`remove ${JSON.stringify(item)}: not a valid id`);
   }
   for (const item of list(raw.add)) {
-    const add = parseAdd(item);
-    if (add) layer.add.push(add);
-    else skipped++;
+    const r = readAdd(item);
+    if (r.op) layer.add.push(r.op);
+    else skip(r.problem);
   }
   for (const item of list(raw.move)) {
-    const move = parseMove(item);
-    if (move) layer.move.push(move);
-    else skipped++;
+    const r = readMove(item);
+    if (r.op) layer.move.push(r.op);
+    else skip(r.problem);
   }
-  return { layer, skipped, ok: true };
+  return { layer, skipped, ok: true, warnings };
 }
 
 export const layerOps = (layer: LayerFile): EditOp[] => [

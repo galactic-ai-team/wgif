@@ -39,7 +39,6 @@ export interface NpcInfo {
 export class RebounderAgent implements WorldAgent {
   readonly role = REBOUNDER_ROLE;
   readonly body: AgentBody & { position: Vec3 };
-  readonly info: NpcInfo;
   /** Set when the model failed mid-game. The NPC then stands still and the built-in ball return takes over. */
   failed: Error | null = null;
   private action: NpcAction = IDLE;
@@ -52,8 +51,12 @@ export class RebounderAgent implements WorldAgent {
   private parked: Vec3 | null = null;
 
   constructor(private readonly hook: NpcHook, private readonly home: Vec3, private readonly pickupRadius = DEFAULT_PICKUP_RADIUS) {
-    this.info = { runtime: hook.runtime, usedFallback: hook.usedFallback, tickHz: hook.tickHz, warnings: [...hook.warnings] };
     this.body = { position: [home[0], home[1], home[2]], heading: Math.PI, radius: 0.3, height: 1.75, color: COLOR };
+  }
+
+  /** Live info about the model driving the NPC — read from the hook each time, because the hook can swap runtimes mid-game (ONNX → rules fallback). */
+  get info(): NpcInfo {
+    return { runtime: this.hook.runtime, usedFallback: this.hook.usedFallback, tickHz: this.hook.tickHz, warnings: [...this.hook.warnings] };
   }
 
   /** The model's current state name (`chase`, `carry`, ...), for display. */
@@ -163,14 +166,16 @@ export class RebounderAgent implements WorldAgent {
 /**
  * Loads the world's rebounder through @wgif/ai's hook and wraps it as an agent. Returns null when
  * the world has no usable rebounder; the world is still fully playable (the runtime's built-in
- * ball return covers the Shootout).
+ * ball return covers the Shootout). With `preferOnnx`, the ONNX clone drives the NPC when it
+ * loads (the JS MLP evaluator, no WASM); the rules twin stays the fallback on any load or
+ * evaluation failure, and the default stays rules-first.
  */
-export async function createRebounder(world: WgifWorld): Promise<RebounderAgent | null> {
+export async function createRebounder(world: WgifWorld, opts: { preferOnnx?: boolean } = {}): Promise<RebounderAgent | null> {
   const models = findModels(world, REBOUNDER_ROLE);
   if (models.length === 0) return null;
   let hook: NpcHook;
   try {
-    hook = await createNpcHook(world, REBOUNDER_ROLE);
+    hook = await createNpcHook(world, REBOUNDER_ROLE, opts.preferOnnx ? { preferRuntime: 'onnx' } : undefined);
   } catch {
     return null;
   }

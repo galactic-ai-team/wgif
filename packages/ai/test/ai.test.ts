@@ -294,6 +294,10 @@ describe('js mlp evaluator (Option A — the player runtime)', () => {
     obs({ ball: { position: [0, 0.9, 9.4], heldBy: 'rebounder' }, self: { position: [0, 0, 9] } }),
     obs({ ball: { position: [0, 0.9, 9.5], heldBy: 'player' } }),
     obs({ ball: { position: [25, 0.12, 0] } }),
+    // Loose ball within pickup reach: the model decides to pick it up.
+    obs({ ball: { position: [0.2, 0.12, 6.1] }, self: { position: [0, 0, 6] } }),
+    // Loose ball within reach but out of bounds: never picked up.
+    obs({ ball: { position: [17.3, 0.12, 0] }, self: { position: [17, 0, 0] } }),
   ];
 
   it('loads the trained model, is deterministic, and agrees with the rules model', async () => {
@@ -324,7 +328,22 @@ describe('js mlp evaluator (Option A — the player runtime)', () => {
       expect(a.velocity[2]).toBeCloseTo(b.velocity[2], 4);
       expect(a.passBall).toBe(b.passBall);
       expect(a.state).toBe(b.state);
+      expect(a.holdingBall).toBe(b.holdingBall);
     }
+  });
+
+  it('decides the pickup from proximity: a loose ball within reach is held, a far or out-of-bounds one is not', async () => {
+    const mlp = await JsMlpNpc.load(onnxDescriptor, onnxBytes);
+    const near = await mlp.update(obs({ ball: { position: [0.2, 0.12, 6.1] }, self: { position: [0, 0, 6] } }), 0.1);
+    expect(near.holdingBall).toBe(true);
+    expect(near.state).toBe('carry');
+    const far = await mlp.update(obs({ ball: { position: [3, 0.12, -2] } }), 0.1);
+    expect(far.holdingBall).toBe(false);
+    expect(far.state).toBe('chase');
+    const outOfBounds = await mlp.update(obs({ ball: { position: [17.3, 0.12, 0] }, self: { position: [17, 0, 0] } }), 0.1);
+    expect(outOfBounds.holdingBall).toBe(false);
+    // The display state follows the last action.
+    expect(mlp.state).toBe('chase');
   });
 
   it('rejects models with missing or wrongly-shaped weights, and garbage bytes', async () => {
@@ -404,6 +423,28 @@ describe('loading models from a world', () => {
     expect(loaded.runtime).toBe('rules');
     expect(loaded.usedFallback).toBe(true);
     expect(loaded.warnings.join(' ')).toMatch(/missing weight "W1"/);
+  });
+
+  it('loads rules-first by default on a rules-first world, and onnx when preferred', async () => {
+    const { manifest, files } = worldFiles();
+    const rulesFirst = { ...manifest, models: [rulesDescriptor, onnxDescriptor] };
+    const world = await unpackWgif(await packWgif(rulesFirst, files));
+    const byDefault = await loadModelFromWorld(world, 'rebounder');
+    expect(byDefault.runtime).toBe('rules');
+    expect(byDefault.usedFallback).toBe(false);
+    const preferred = await loadModelFromWorld(world, 'rebounder', { preferRuntime: 'onnx' });
+    expect(preferred.runtime).toBe('onnx');
+    expect(preferred.usedFallback).toBe(false);
+  });
+
+  it('falls back to rules when the preferred onnx model cannot load', async () => {
+    const { manifest, files } = worldFiles({ 'models/rebounder-mlp.onnx': utf8('not an onnx model') });
+    const rulesFirst = { ...manifest, models: [rulesDescriptor, onnxDescriptor] };
+    const world = await unpackWgif(await packWgif(rulesFirst, files));
+    const loaded = await loadModelFromWorld(world, 'rebounder', { preferRuntime: 'onnx' });
+    expect(loaded.runtime).toBe('rules');
+    expect(loaded.usedFallback).toBe(true);
+    expect(loaded.warnings.length).toBeGreaterThan(0);
   });
 
   it('loads rules-only worlds, and throws for an unknown purpose', async () => {

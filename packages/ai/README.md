@@ -118,7 +118,10 @@ const action = await model.update(observation, dt);
 `onnxruntime-web` is a devDependency of this package for the Node-side
 verification tests only, and is never imported by the player path. A broken
 ONNX file falls back to its declared `fallback` model; a broken rules model is
-a load error, because the rules are the fallback.
+a load error, because the rules are the fallback. Pass
+`{ preferRuntime: 'onnx' }` to try the ONNX model first on a rules-first
+world (the player opts into this with `?npc=onnx`); the fallback is
+unchanged.
 
 ## Player hook
 
@@ -129,10 +132,14 @@ the model at its descriptor tickHz (at most 3 steps per call) and returns a
 `TickResult`: the current action, whether a step was committed (`stepped`),
 and the step sequence number (`step`). Velocity is persistent (the player
 integrates the last action's velocity every frame); gameplay events are
-one-shot and are applied only when `stepped` is true. A rejected step
-propagates — the player disables the NPC and reports it — and a step that
-resolves after reset/dispose is discarded. See
-`docs/notes/models-packaging.md` for the packaging summary.
+one-shot and are applied only when `stepped` is true. A rejected step from a
+rules model propagates — the player disables the NPC and reports it — but a
+rejected step from an ONNX model swaps the hook to the rules twin and retries
+once, so the NPC keeps playing; only a failing rules model ever reaches the
+player. A step that resolves after reset/dispose is discarded. Pass
+`{ preferRuntime: 'onnx' }` to `createNpcHook` to run the ONNX model first on
+a rules-first world. See `docs/notes/models-packaging.md` for the packaging
+summary.
 The player wires it in `apps/player/src/ai.ts`: step the model at its
 `tickHz` (10 Hz), integrate the velocity between ticks, move the rebounder
 marker and the ball node. This hook is deliberately tiny — Claude owns the
