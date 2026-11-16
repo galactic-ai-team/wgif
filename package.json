@@ -16,7 +16,7 @@
   "scripts": {
     "lint": "eslint .",
     "typecheck": "npm run typecheck --workspaces --if-present && tsc --noEmit -p tools/img2world/tsconfig.json",
-    "test": "npm run test --workspaces --if-present && vitest run scripts",
+    "test": "npm run test --workspaces --if-present && vitest run scripts tools/img2world",
     "build": "npm run build --workspaces --if-present",
     "pack:court": "npm run pack --workspace @wgif/example-court",
     "dev": "npm run dev --workspace @wgif/player",
