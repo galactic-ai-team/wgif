@@ -46,7 +46,7 @@ export async function runCli(argv: string[]): Promise<void> {
   mkdirSync(dirname(absOut), { recursive: true });
   writeFileSync(absOut, result.wgifBytes);
   console.log(
-    `[img2world] Wrote ${absOut} (${result.wgifBytes.byteLength} B, generator=${result.manifest.provenance.generator}, model=${result.manifest.provenance.model ?? 'n/a'})`
+    `[img2world] Wrote ${absOut} (${result.wgifBytes.byteLength} B, generator=${result.manifest.provenance.generator})`
   );
 }
 

@@ -22,14 +22,15 @@ export interface Rc1Spawn {
   lookAt: [number, number, number];
 }
 
+/**
+ * Strict RC1 provenance schema: only `parent`, `generator`, and `history` are permitted
+ * (`additionalProperties: false`). Seed, origin, and parameters are encoded in `generator`
+ * and `history` so zero extra properties appear on `provenance`.
+ */
 export interface Rc1Provenance {
+  parent?: string;
   generator: string;
-  origin?: 'procedural' | 'image-to-world' | 'handcrafted';
-  seed?: number;
-  model?: string;
-  license?: string;
-  sourceSha256?: string;
-  parameters?: Record<string, unknown>;
+  history?: string[];
 }
 
 export interface Rc1Manifest {
@@ -174,7 +175,8 @@ export function packDeterministicWgifZip(files: ZipInputEntry[]): Uint8Array {
 }
 
 export function buildReproducibleCourtArtifacts(): CourtBundleArtifacts {
-  const sceneGlb = buildCourtGlb(0x57474946);
+  const seed = 0x57474946; // 1464293702
+  const sceneGlb = buildCourtGlb(seed);
   const previewGif = generateOrbitPreviewGif(320, 200, 24);
 
   const sha256Scene = createHash('sha256').update(sceneGlb).digest('hex');
@@ -216,9 +218,7 @@ export function buildReproducibleCourtArtifacts(): CourtBundleArtifacts {
       },
     ],
     provenance: {
-      generator: '@wgif/court-builder@0.1.0',
-      origin: 'procedural',
-      seed: 1464293702,
+      generator: `@wgif/court-builder@0.1.0 (origin=procedural;seed=${seed})`,
     },
   };
 

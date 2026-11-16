@@ -121,7 +121,7 @@ function normalizeFloatMap(input: Float32Array, length: number): Float32Array {
 
 /**
  * Builds a displaced 3D mesh (.glb), orbiting preview.gif, RC1 manifest, and packed .wgif
- * with manifest.json as the first and STORED zip entry.
+ * with manifest.json as the first and STORED zip entry and strict RC1 provenance.
  */
 export async function buildWorldFromImage(
   opts: Img2WorldOptions
@@ -250,17 +250,8 @@ export async function buildWorldFromImage(
       },
     ],
     provenance: {
-      generator: '@wgif/img2world@0.1.0',
-      origin: 'image-to-world',
-      model: modelUsed,
-      license,
-      sourceSha256: sourceImageSha256,
-      parameters: {
-        grid_size: [gw, gh],
-        fov_deg: fovDeg,
-        depth_scale: depthScale,
-        max_edge_stretch: maxStretch,
-      },
+      parent: `sha256:${sourceImageSha256}`,
+      generator: `@wgif/img2world@0.1.0 (origin=image-to-world;model=${modelUsed};license=${license};grid=${gw}x${gh};fov=${fovDeg};depthScale=${depthScale};maxStretch=${maxStretch})`,
     },
   };
 
