@@ -152,6 +152,30 @@ export async function validateWorld(manifest: unknown, files: WgifFiles): Promis
     }
   }
 
+  // SPEC §6: an ONNX model with a usable rules fallback is an optional
+  // alternative, not a reason to require a general ONNX runtime. Warn (a
+  // SHOULD NOT, not a MUST NOT) when requires[] claims runtime.onnx while
+  // every ONNX model has a usable same-purpose rules fallback.
+  if ((m.requires ?? []).includes('runtime.onnx')) {
+    const onnxModels = (m.models ?? []).filter((model) => model.runtime === 'onnx');
+    const hasUsableFallback = (model: (typeof onnxModels)[number]): boolean => {
+      const target = model.fallback ? modelById.get(model.fallback) : undefined;
+      return (
+        !!target &&
+        target.runtime === 'rules' &&
+        target.fallback === undefined &&
+        !!model.purpose &&
+        model.purpose === target.purpose
+      );
+    };
+    if (onnxModels.length > 0 && onnxModels.every(hasUsableFallback))
+      warn(
+        'requires.onnx-unneeded',
+        'requires "runtime.onnx" but every ONNX model has a usable rules fallback; a world with a usable rules fallback SHOULD NOT require runtime.onnx (SPEC §6)',
+        'runtime.onnx',
+      );
+  }
+
   const glb = files[m.entry.scene];
   if (glb && externalGlbUris(glb).length > 0)
     err('scene.external-uri', 'GLB contains an external URI; only embedded data is permitted', m.entry.scene);

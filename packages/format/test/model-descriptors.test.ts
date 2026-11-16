@@ -16,7 +16,7 @@ const onnx: ModelEntry = {
   outputs: [{ name: 'action', dtype: 'float32', shape: [1, 3] }],
 };
 
-async function world(models: ModelEntry[], extra: WgifFiles = {}) {
+async function world(models: ModelEntry[], extra: WgifFiles = {}, requires: string[] = ['scene.glb', 'runtime.rules']) {
   const fixture = await readFile(new URL('../../../tests/fixtures/good-minimal.wgif', import.meta.url));
   const base = await unpackWgif(new Uint8Array(fixture));
   const files = {
@@ -25,11 +25,14 @@ async function world(models: ModelEntry[], extra: WgifFiles = {}) {
     'models/rebounder-mlp.onnx': utf8('fake-on-device-model-for-format-validation'),
     ...extra,
   };
-  return unpackWgif(await packWgif({ ...base.manifest, models, requires: ['scene.glb', 'runtime.rules'] }, files));
+  return unpackWgif(await packWgif({ ...base.manifest, models, requires }, files));
 }
 
 const errorCodes = async (models: ModelEntry[], extra?: WgifFiles) =>
   (await world(models, extra)).report.errors.map((e) => e.code);
+
+const warningCodes = async (models: ModelEntry[], requires?: string[]) =>
+  (await world(models, {}, requires)).report.warnings.map((w) => w.code);
 
 describe('Nova model descriptors integrated into hardened RC1 validator', () => {
   it('accepts a same-purpose ONNX -> rules fallback without requiring ONNX', async () => {
@@ -37,6 +40,18 @@ describe('Nova model descriptors integrated into hardened RC1 validator', () => 
     expect(result.report.ok).toBe(true);
     expect(result.manifest.requires).toContain('runtime.rules');
     expect(result.manifest.requires).not.toContain('runtime.onnx');
+  });
+
+  it('warns when runtime.onnx is required but every ONNX model has a usable rules fallback', async () => {
+    const withOnnx = ['scene.glb', 'runtime.rules', 'runtime.onnx'];
+    const result = await world([onnx, rules], {}, withOnnx);
+    expect(result.report.ok).toBe(true); // a SHOULD NOT, not a MUST NOT
+    expect(await warningCodes([onnx, rules], withOnnx)).toContain('requires.onnx-unneeded');
+    // No warning when an ONNX model has no fallback: the world genuinely
+    // needs an ONNX runtime for it.
+    expect(await warningCodes([{ ...onnx, fallback: undefined }], withOnnx)).not.toContain('requires.onnx-unneeded');
+    // No warning when runtime.onnx is not required at all (the court case).
+    expect(await warningCodes([onnx, rules])).not.toContain('requires.onnx-unneeded');
   });
 
   it('rejects bad fallback identity, purpose and runtime', async () => {
