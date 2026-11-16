@@ -9,3 +9,9 @@ apps/player/public/samples/
 .env*
 *.pem
 *.key
+
+# Local model weights & cache (never commit weights)
+.cache/
+tools/img2world/.cache/
+*.onnx
+*.bin
