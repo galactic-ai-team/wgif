@@ -1,18 +1,31 @@
-import type { WgifWorld } from '@wgif/format';
-import { WorldViewer } from './viewer.js';
-import { attachCourtAi, type CourtAi } from './ai.js';
-import { WorldOpenError, cameraHints, formatBytes, openWorld } from './world.js';
+import { createRebounder, type RebounderAgent } from './ai.js';
+import { Sfx } from './audio.js';
+import { PlayerControls } from './controls.js';
+import { Hud } from './hud.js';
+import { BallReturnAgent } from './sim/agents.js';
+import type { RuntimeEvent, WorldRuntime } from './sim/runtime.js';
+import { WorldViewer, type ControlMode } from './viewer.js';
+import { WorldOpenError, formatBytes, loadDocument, openWorld, type WorldDocument } from './world.js';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+const li = (text: string, className = ''): HTMLLIElement => Object.assign(document.createElement('li'), { textContent: text, className });
 const stage = $('stage');
 const fileInput = $<HTMLInputElement>('file');
 const modeBtn = $<HTMLButtonElement>('mode');
+const playBtn = $<HTMLButtonElement>('play');
+const muteBtn = $<HTMLButtonElement>('mute');
 const hint = $('hint');
 const toast = $('toast');
+const perfBox = new URLSearchParams(location.search).has('perf') ? $('perf') : null;
 
-let viewer: WorldViewer | null = null;
-let courtAi: CourtAi | null = null;
-let previewUrl: string | null = null;
+/** Everything that belongs to the world that is open right now. */
+interface Session {
+  doc: WorldDocument;
+  npc: RebounderAgent | null;
+  /** Names of thin props (rims), for the sound of a bounce. */
+  props: Set<string>;
+  warnings: string[];
+}
 
 // Offline PWA (Phase One item 6): register the hand-written service worker
 // in production builds only, so `vite dev` never caches dev assets. The
@@ -24,25 +37,71 @@ if (import.meta.env.PROD && 'serviceWorker' in navigator) {
   });
 }
 
-function showError(message: string, details: string[] = []): void {
+const hud = new Hud();
+const sfx = new Sfx();
+let viewer: WorldViewer | null = null;
+let session: Session | null = null;
+let previewUrl: string | null = null;
+let toastTimer: ReturnType<typeof setTimeout> | null = null;
+
+const controls = new PlayerControls(stage, { stick: $('stick'), knob: $('knob'), action: $('action') }, {
+  onPrimary: () => {
+    sfx.unlock();
+    const rt = viewer?.runtime;
+    if (rt && !rt.held) rt.grab();
+  },
+  onUse: () => {
+    const rt = viewer?.runtime;
+    if (rt && !(rt.held ? rt.drop() : rt.grab())) notify('The ball is out of reach. Walk up to it, or press R to bring it back.');
+  },
+  onReset: () => resetBall(),
+  onLockChange: () => setHint(),
+});
+
+function notify(message: string, kind: 'error' | 'ok' = 'ok', details: string[] = [], ms = 6000): void {
   toast.textContent = [message, ...details.slice(0, 8)].join('\n');
+  toast.className = kind === 'ok' ? 'ok' : '';
   toast.hidden = false;
-  setTimeout(() => (toast.hidden = true), 9000);
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (toast.hidden = true), ms);
 }
 
-function setHint(mode: 'orbit' | 'walk', locked: boolean): void {
+const showError = (message: string, details: string[] = []): void => notify(message, 'error', details, 9000);
+
+function setHint(): void {
+  const mode: ControlMode = viewer?.mode ?? 'orbit';
   modeBtn.textContent = `Mode: ${mode === 'orbit' ? 'Orbit' : 'Walk'}`;
-  hint.hidden = false;
+  hint.hidden = !viewer?.runtime;
   hint.textContent =
     mode === 'orbit'
       ? 'Orbit: drag to rotate · scroll/pinch to zoom · right-drag to pan'
-      : locked
-        ? 'Walk: WASD/arrows to move · mouse to look · Shift to run · Esc to release'
-        : 'Walk: click the scene to look around (needs a mouse + keyboard for now)';
+      : controls.touch
+        ? 'Walk: left thumb moves · drag anywhere else to look'
+        : controls.locked
+          ? 'WASD/arrows move · Shift runs · click or Space shoots · E picks up/drops · R resets the ball · Esc frees the mouse'
+          : 'Walk: click the scene to look around · WASD/arrows to move';
 }
 
-function renderInfo(world: WgifWorld): void {
-  const m = world.manifest;
+function setMode(mode: ControlMode): void {
+  if (!viewer) return;
+  if (mode === 'orbit') viewer.runtime?.stopShootout();
+  viewer.setMode(mode);
+  controls.setEnabled(mode === 'walk');
+  setHint();
+  syncButtons();
+}
+
+function syncButtons(): void {
+  const rt = viewer?.runtime ?? null;
+  modeBtn.disabled = !rt;
+  playBtn.hidden = !rt?.shootout;
+  playBtn.textContent = rt?.shootout?.running ? '■ Stop' : '▶ Shootout';
+}
+
+function renderInfo(): void {
+  if (!session) return;
+  const { doc } = session;
+  const { manifest: m, report } = doc.world;
   $('info').hidden = false;
   $('title').textContent = m.title;
   $('creator').textContent = `by ${m.creator.name} · WGIF ${m.wgif}`;
@@ -51,49 +110,62 @@ function renderInfo(world: WgifWorld): void {
   badge.textContent = m.mode;
   badge.className = `badge ${m.mode}`;
   const sig = $('sig');
-  sig.textContent = world.report.signature === 'absent' ? 'unsigned' : `signature ${world.report.signature}`;
-  sig.className = `badge ${world.report.signature}`;
-  const issues = $('issues');
-  issues.replaceChildren(
-    ...world.report.warnings.map((w) => Object.assign(document.createElement('li'), { className: 'warning', textContent: w.message })),
-  );
-  $('files').replaceChildren(
-    ...m.files.map((f) => Object.assign(document.createElement('li'), { textContent: `${f.path} — ${formatBytes(f.size)}` })),
-  );
-  const preview = world.files[m.entry.preview];
+  sig.textContent = report.signature === 'absent' ? 'unsigned' : `signature ${report.signature}`;
+  sig.className = `badge ${report.signature}`;
+  $('issues').replaceChildren(...report.warnings.map((w) => li(w.message, 'warning')), ...session.warnings.map((w) => li(w, 'warning')));
+  $('files').replaceChildren(...m.files.map((f) => li(`${f.path} — ${formatBytes(f.size)}`)));
+
+  const preview = doc.world.files[m.entry.preview];
   if (previewUrl) URL.revokeObjectURL(previewUrl);
   previewUrl = preview ? URL.createObjectURL(new Blob([preview as Uint8Array<ArrayBuffer>], { type: 'image/png' })) : null;
   const img = $<HTMLImageElement>('preview');
   img.hidden = !previewUrl;
   if (previewUrl) img.src = previewUrl;
+  renderGame();
+}
+
+function renderGame(): void {
+  const game = viewer?.runtime?.shootout;
+  $('game').hidden = !game;
+  if (game) $('game-stats').textContent = `High score ${game.highScore} · played ${game.plays} time${game.plays === 1 ? '' : 's'} · ${game.rules.durationSec} s, ${game.rules.pointsPerBasket} points a basket`;
+  const npc = session?.npc;
+  $('ai').textContent = npc
+    ? `Rebounder NPC: ${npc.info.runtime} model at ${npc.info.tickHz} Hz${npc.info.usedFallback ? ' (rules fallback: the ONNX model could not run)' : ''}. It fetches the loose ball and passes it back.`
+    : '';
+}
+
+/** Loads a document into the viewer and attaches the NPC. */
+async function mount(view: WorldDocument): Promise<void> {
+  if (!viewer || !session) return;
+  const { runtime, built } = await viewer.load(view, view.initialState);
+  if (session.npc) {
+    runtime.setAgent(session.npc);
+    // The built-in ball return stays on as a safety net for balls the NPC cannot get to.
+    if (runtime.shootout) runtime.setAgent(new BallReturnAgent(7));
+  }
+  session.props = new Set(built.props);
+  session.warnings = [...view.warnings, ...built.warnings, ...(session.npc?.info.warnings ?? [])];
 }
 
 async function openBytes(bytes: Uint8Array, name: string): Promise<void> {
   try {
     const world = await openWorld(bytes);
-    viewer ??= new WorldViewer(stage);
-    viewer.onModeChange = setHint;
-    const scene = world.files[world.manifest.entry.scene];
-    if (!scene) throw new WorldOpenError('Scene file missing');
-    courtAi?.dispose();
-    courtAi = null;
-    await viewer.load(scene, cameraHints(world));
+    const doc = await loadDocument(world);
+    try {
+      viewer ??= new WorldViewer(stage, controls);
+    } catch {
+      throw new WorldOpenError('This browser could not start WebGL, which the player needs to draw the world.');
+    }
+    viewer.hooks.onFrame = onFrame;
+    hud.hideResult();
+    session = { doc, npc: await createRebounder(world), props: new Set(), warnings: [] };
+    await mount(doc);
     $('empty').hidden = true;
-    modeBtn.disabled = false;
-    setHint(viewer.mode, false);
-    renderInfo(world);
+    controls.setEnabled(viewer.mode === 'walk');
+    setHint();
+    syncButtons();
+    renderInfo();
     document.title = `${world.manifest.title} — WGIF Player`;
-    courtAi = await attachCourtAi(world, viewer, cameraHints(world), {
-      // A mid-game NPC failure disables the NPC (its marker is removed) and
-      // reports here, so the #ai line never claims a live NPC that is gone.
-      onError: (e) => {
-        courtAi = null;
-        $('ai').textContent = `Rebounder NPC disabled: ${(e as Error).message ?? String(e)}`;
-      },
-    });
-    $('ai').textContent = courtAi
-      ? `Rebounder NPC: ${courtAi.runtime} model${courtAi.usedFallback ? ' (rules fallback — ONNX could not run)' : ''} · watch the violet rebounder fetch the loose ball`
-      : 'No rebounder NPC in this world.';
   } catch (e) {
     const err = e as WorldOpenError;
     showError(`${name}: ${err.message}`, err.details ?? []);
@@ -103,6 +175,81 @@ async function openBytes(bytes: Uint8Array, name: string): Promise<void> {
 async function openFile(file: File): Promise<void> {
   await openBytes(new Uint8Array(await file.arrayBuffer()), file.name);
 }
+
+// ---- playing ----------------------------------------------------------------------------------
+
+function startShootout(): void {
+  const rt = viewer?.runtime;
+  if (!rt?.shootout) return;
+  sfx.unlock();
+  hud.hideResult();
+  setMode('walk');
+  rt.startShootout();
+  syncButtons();
+}
+
+function resetBall(): void {
+  const rt = viewer?.runtime;
+  const ball = rt?.shootout?.def.ball ?? rt?.objects.keys().next().value;
+  if (rt && ball && !rt.shootout?.running) rt.resetObject(ball);
+}
+
+const frameTimes: number[] = [];
+let frames = 0;
+let lastPhase = '';
+
+function onFrame(rt: WorldRuntime, events: RuntimeEvent[], dt: number): void {
+  hud.frame(rt, viewer?.mode ?? 'orbit', { touch: controls.touch, editing: false });
+  for (const e of events) onEvent(e);
+  const phase = rt.shootout?.phase ?? '';
+  if (phase !== lastPhase) {
+    lastPhase = phase;
+    syncButtons();
+  }
+  if (perfBox && viewer) {
+    frameTimes.push(dt * 1000);
+    if (frameTimes.length > 120) frameTimes.shift();
+    if (++frames % 30 === 0) {
+      const sorted = [...frameTimes].sort((a, b) => a - b);
+      const s = viewer.stats();
+      perfBox.hidden = false;
+      perfBox.textContent = `draw calls ${s.calls}\ntriangles ${s.triangles}\nframe p50 ${sorted[Math.floor(sorted.length * 0.5)]?.toFixed(1)} ms\nframe p95 ${sorted[Math.floor(sorted.length * 0.95)]?.toFixed(1)} ms\nquality ${s.level} · ${s.pixelRatio.toFixed(2)}x · shadows ${s.shadows ? 'on' : 'off'}`;
+    }
+  }
+}
+
+function onEvent(e: RuntimeEvent): void {
+  if (e.type === 'bounce') sfx.bounce(e.speed, session?.props.has(e.surface) ?? false);
+  else if (e.type === 'grab') sfx.grab();
+  else if (e.type === 'score') {
+    const node = session?.doc.interactions.objects.find((o) => o.id === e.trigger)?.node;
+    if (node) viewer?.flash(node);
+    if (e.swish) sfx.swish();
+    sfx.score();
+    hud.banner(e.counted ? `+${e.points}${e.swish ? ' Swish!' : e.three ? ' From downtown!' : ''}` : e.swish ? 'Swish!' : 'Bucket!');
+  } else if (e.type === 'state') {
+    renderGame();
+  } else if (e.type === 'shootout') {
+    const s = e.signal;
+    if (s.kind === 'countdown') {
+      hud.banner(String(s.seconds), 800);
+      sfx.beep();
+    } else if (s.kind === 'go') {
+      hud.banner('GO!', 700);
+      sfx.beep(true);
+    } else if (s.kind === 'second' && s.timeLeft <= 5) {
+      sfx.beep();
+    } else if (s.kind === 'buzzer') {
+      hud.banner('TIME!', 1200);
+      sfx.buzzer();
+    } else if (s.kind === 'over') {
+      hud.showResult(s.result);
+      if (document.pointerLockElement) document.exitPointerLock();
+    }
+  }
+}
+
+// ---- wiring -----------------------------------------------------------------------------------
 
 fileInput.addEventListener('change', () => {
   const f = fileInput.files?.[0];
@@ -120,7 +267,34 @@ $('sample').addEventListener('click', async () => {
   }
 });
 
-modeBtn.addEventListener('click', () => viewer?.setMode(viewer.mode === 'orbit' ? 'walk' : 'orbit'));
+modeBtn.addEventListener('click', () => setMode(viewer?.mode === 'orbit' ? 'walk' : 'orbit'));
+playBtn.addEventListener('click', () => {
+  const rt = viewer?.runtime;
+  if (rt?.shootout?.running) {
+    rt.stopShootout();
+    syncButtons();
+  } else {
+    startShootout();
+  }
+});
+$('again').addEventListener('click', startShootout);
+$('result-close').addEventListener('click', () => hud.hideResult());
+$('ballreset').addEventListener('click', resetBall);
+
+const paintMute = (): void => {
+  muteBtn.textContent = sfx.muted ? '🔇' : '🔊';
+  muteBtn.setAttribute('aria-pressed', String(sfx.muted));
+};
+muteBtn.addEventListener('click', () => {
+  sfx.setMuted(!sfx.muted);
+  paintMute();
+});
+paintMute();
+
+window.addEventListener('keydown', (e) => {
+  const el = e.target as HTMLElement | null;
+  if (e.code === 'Enter' && !e.repeat && el?.tagName !== 'INPUT' && el?.tagName !== 'BUTTON' && viewer?.runtime?.shootout && !viewer.runtime.shootout.running) startShootout();
+});
 
 let dragDepth = 0;
 const drop = $('drop');
@@ -142,5 +316,14 @@ window.addEventListener('drop', (e) => {
   if (f) void openFile(f);
 });
 
-// Expose a tiny hook for automated smoke tests.
-(window as unknown as { wgifOpenBytes: typeof openBytes }).wgifOpenBytes = openBytes;
+// Hooks for automated smoke tests.
+Object.assign(window as unknown as Record<string, unknown>, {
+  wgifOpenBytes: openBytes,
+  wgifPlayer: {
+    get viewer() { return viewer; },
+    get runtime() { return viewer?.runtime ?? null; },
+    get session() { return session; },
+    setMode,
+    startShootout,
+  },
+});
