@@ -5,6 +5,8 @@ import { packWgif, unpackWgif, utf8, type ModelEntry, type WgifFiles } from '@wg
 import {
   createNpcHook,
   createNpcHookFromModel,
+  DEFAULT_COURT_BOUNDS,
+  DEFAULT_HOME,
   MAX_STEPS_PER_TICK,
   type BallObservation,
   type NpcAction,
@@ -12,6 +14,9 @@ import {
   type NpcObservation,
   type Vec3,
 } from '../src/index.js';
+
+const courtWgifPath = fileURLToPath(new URL('../../../examples/court/court.wgif', import.meta.url));
+const courtBytes = new Uint8Array(readFileSync(courtWgifPath));
 
 const rulesPath = fileURLToPath(new URL('../../../examples/court/models/rebounder.rules.json', import.meta.url));
 const onnxPath = fileURLToPath(new URL('../../../examples/court/models/rebounder-mlp.onnx', import.meta.url));
@@ -335,5 +340,136 @@ describe('createNpcHook from a world', () => {
   it('rejects an unknown purpose', async () => {
     const { manifest, files } = worldFiles([rulesDescriptor, onnxDescriptor]);
     await expect(createNpcHook(await unpackWgif(await packWgif(manifest, files)), 'crowd')).rejects.toThrow(/no model/i);
+  });
+});
+
+/**
+ * Missed shot → fetch → pass, end to end through the hook, with player-style
+ * integration (mirroring apps/player/src/ai.ts): the caller integrates the
+ * persistent velocity, moves the ball while it is held, and applies the
+ * one-shot pass only on a fresh stepped tick. The rules NPC already does
+ * this — this test locks the requested behaviour in, so a regression in the
+ * rules, the hook or the player wiring fails here first.
+ */
+describe('rebounder: missed shot → fetch → pass (end to end through the hook)', () => {
+  const PLAYER: Vec3 = [0, 0, 9.5];
+  const CARRY_HEIGHT = 0.9;
+  const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+  const dist2d = (a: Vec3, b: Vec3) => Math.hypot(a[0] - b[0], a[2] - b[2]);
+
+  function makeRunner(hook: Awaited<ReturnType<typeof createNpcHook>>) {
+    let selfPos: Vec3 = [...DEFAULT_HOME];
+    let ballPos: Vec3 = [9, 0.12, 1.2];
+    let heldBy: 'player' | 'rebounder' | null = null;
+    let timeSec = 0;
+    let passEvents = 0;
+    const states: string[] = [];
+    return {
+      get selfPos() {
+        return selfPos;
+      },
+      get ballPos() {
+        return ballPos;
+      },
+      get heldBy() {
+        return heldBy;
+      },
+      get passEvents() {
+        return passEvents;
+      },
+      get states() {
+        return states;
+      },
+      setBallLoose(at: Vec3) {
+        ballPos = [...at];
+        heldBy = null;
+      },
+      async step() {
+        timeSec += 0.1;
+        const result = await hook.tick(0.1, {
+          timeSec,
+          ball: { position: ballPos, velocity: [0, 0, 0], heldBy },
+          player: { position: PLAYER },
+          self: { position: selfPos },
+        });
+        const a = result.action;
+        if (states[states.length - 1] !== a.state) states.push(a.state);
+        selfPos = [
+          clamp(selfPos[0] + a.velocity[0] * 0.1, DEFAULT_COURT_BOUNDS.min[0], DEFAULT_COURT_BOUNDS.max[0]),
+          0,
+          clamp(selfPos[2] + a.velocity[2] * 0.1, DEFAULT_COURT_BOUNDS.min[2], DEFAULT_COURT_BOUNDS.max[2]),
+        ];
+        if (a.holdingBall) {
+          heldBy = 'rebounder';
+          ballPos = [selfPos[0], CARRY_HEIGHT, selfPos[2]];
+        }
+        // One-shot event, only on a fresh step.
+        if (result.stepped && a.passBall) {
+          passEvents++;
+          heldBy = 'player';
+          ballPos = [PLAYER[0], CARRY_HEIGHT, PLAYER[2]];
+        }
+        return result;
+      },
+      /** Steps until a fresh pass fires (or the tick budget runs out). */
+      async runUntilPass(maxTicks: number): Promise<number> {
+        const before = passEvents;
+        for (let t = 0; t < maxTicks; t++) {
+          await this.step();
+          if (passEvents > before) return t + 1;
+        }
+        return -1;
+      },
+    };
+  }
+
+  function expectStatesInOrder(states: string[], wanted: string[]) {
+    // The runner records consecutive distinct states; filter to the wanted
+    // ones and require exactly that order, with nothing extra in between.
+    expect(states.filter((s) => wanted.includes(s))).toEqual(wanted);
+  }
+
+  it('walks to the ball after a missed shot and passes it back — twice', async () => {
+    const hook = await createNpcHook(await unpackWgif(courtBytes), 'rebounder');
+    expect(hook.runtime).toBe('rules');
+    const run = makeRunner(hook);
+
+    // The opening loose ball: the first fetch, proving the loop from spawn.
+    const states0 = run.states.length;
+    const openingTicks = await run.runUntilPass(200);
+    expect(openingTicks).toBeGreaterThan(0);
+    expect(run.passEvents).toBe(1);
+    expect(run.heldBy).toBe('player');
+    expect(run.ballPos).toEqual([PLAYER[0], CARRY_HEIGHT, PLAYER[2]]);
+    expectStatesInOrder(run.states.slice(states0), ['chase', 'pickup', 'carry', 'pass']);
+
+    // The NPC walks home after the pass; the pass must not re-fire while the
+    // player holds the ball.
+    for (let i = 0; i < 60; i++) await run.step();
+    expect(run.passEvents).toBe(1);
+    expect(hook.state).toBe('idle');
+    expect(dist2d(run.selfPos, DEFAULT_HOME)).toBeLessThan(0.5);
+
+    // Missed shot 1: the player shoots toward the home rim and misses; the
+    // ball lands loose on the floor near the rim, in bounds.
+    run.setBallLoose([11, 0.12, 2.5]);
+    const states1 = run.states.length;
+    const miss1Ticks = await run.runUntilPass(200);
+    expect(miss1Ticks).toBeGreaterThan(0);
+    expect(run.passEvents).toBe(2);
+    expect(run.heldBy).toBe('player');
+    expectStatesInOrder(run.states.slice(states1), ['chase', 'pickup', 'carry', 'pass']);
+    for (let i = 0; i < 60; i++) await run.step();
+    expect(run.passEvents).toBe(2);
+    expect(hook.state).toBe('idle');
+
+    // Missed shot 2: a long miss into the far corner — the longest walk.
+    run.setBallLoose([-13, 0.12, -7]);
+    const states2 = run.states.length;
+    const miss2Ticks = await run.runUntilPass(400);
+    expect(miss2Ticks).toBeGreaterThan(0);
+    expect(run.passEvents).toBe(3);
+    expect(run.heldBy).toBe('player');
+    expectStatesInOrder(run.states.slice(states2), ['chase', 'pickup', 'carry', 'pass']);
   });
 });

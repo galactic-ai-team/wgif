@@ -37,6 +37,20 @@ positions and no physics — the caller integrates `action.velocity` and moves
 the ball when `holdingBall` / `passBall` say so. The same observation sequence
 always produces the same action sequence (seed 7, no randomness, no wall clock).
 
+### Missed shot
+
+The rebounder's job is the missed shot: the ball leaves the player's hands,
+misses, and lands loose on the floor — the NPC walks to it, picks it up,
+carries it back and passes it to the player, then walks home and waits for
+the next one. That whole loop (opening loose ball, a miss near the rim, a
+long miss into the far corner, exactly one fresh pass per loop, no re-fire
+while the player holds the ball) is covered end to end through the hook in
+`packages/ai/test/hook.test.ts` ("missed shot → fetch → pass"). The loop
+needs the ball to become loose — today that happens at spawn, and it will
+happen on every missed shot once the shooting minigame (Claude's lane,
+PHASE1 item 5) runs; the NPC is ready for it, and a ball that rolls out of
+bounds is left alone (the NPC cannot leave the court to fetch it).
+
 ### Rules model (live in Phase One)
 
 `models/rebounder.rules.json` is the source of truth: a declarative state
