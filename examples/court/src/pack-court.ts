@@ -5,11 +5,31 @@ import { createHash } from 'node:crypto';
 import { buildCourtGlb, generateOrbitPreviewGif } from './court-builder.js';
 import { crc32, zlibCompressDeterministic } from './prng.js';
 
+export interface Rc1Creator {
+  name: string;
+  url?: string;
+}
+
 export interface Rc1FileEntry {
   path: string;
   sha256: string;
-  bytes: number;
-  mime?: string;
+  size: number;
+  mediaType: string;
+}
+
+export interface Rc1Spawn {
+  position: [number, number, number];
+  lookAt: [number, number, number];
+}
+
+export interface Rc1Provenance {
+  generator: string;
+  origin?: 'procedural' | 'image-to-world' | 'handcrafted';
+  seed?: number;
+  model?: string;
+  license?: string;
+  sourceSha256?: string;
+  parameters?: Record<string, unknown>;
 }
 
 export interface Rc1Manifest {
@@ -17,45 +37,17 @@ export interface Rc1Manifest {
   id: string;
   title: string;
   description?: string;
-  creator: string;
+  creator: Rc1Creator;
   created: string;
   license?: string;
-  mode: 'walk' | 'orbit';
+  mode: 'locked' | 'editable';
   entry: {
     scene: string;
     preview: string;
   };
+  spawn: Rc1Spawn;
   files: Rc1FileEntry[];
-  camera?: {
-    spawn: {
-      position: [number, number, number];
-      target: [number, number, number];
-      fov_deg: number;
-    };
-    bounds?: {
-      min: [number, number, number];
-      max: [number, number, number];
-    };
-  };
-  provenance?: {
-    origin: 'procedural' | 'image-to-world' | 'handcrafted';
-    generator: {
-      name: string;
-      version: string;
-      seed?: number;
-      model?: {
-        id: string;
-        license: string;
-      };
-      parameters?: Record<string, unknown>;
-    };
-    source_inputs?: Array<{
-      role: string;
-      mime_type: string;
-      sha256: string;
-      dimensions: [number, number];
-    }>;
-  };
+  provenance: Rc1Provenance;
 }
 
 export interface CourtBundleArtifacts {
@@ -194,46 +186,39 @@ export function buildReproducibleCourtArtifacts(): CourtBundleArtifacts {
     title: 'Galactic Hardwood Arena (Procedural Phase 1)',
     description:
       'Handcrafted deterministic 3D basketball court with procedural maple planks, regulation lines, tapered diamond rim nets, arena walls, and stadium lights.',
-    creator: 'Galactic AI Team (@wgif/court-builder)',
+    creator: {
+      name: 'Galactic AI Team',
+      url: 'https://github.com/galactic-ai-team/wgif',
+    },
     created: '2026-01-01T00:00:00.000Z',
     license: 'MIT',
-    mode: 'walk',
+    mode: 'editable',
     entry: {
       scene: 'scene/court.glb',
       preview: 'preview.gif',
+    },
+    spawn: {
+      position: [0, 1.7, 9.2],
+      lookAt: [0, 1.5, 0],
     },
     files: [
       {
         path: 'preview.gif',
         sha256: sha256Preview,
-        bytes: previewGif.byteLength,
-        mime: 'image/gif',
+        size: previewGif.byteLength,
+        mediaType: 'image/gif',
       },
       {
         path: 'scene/court.glb',
         sha256: sha256Scene,
-        bytes: sceneGlb.byteLength,
-        mime: 'model/gltf-binary',
+        size: sceneGlb.byteLength,
+        mediaType: 'model/gltf-binary',
       },
     ],
-    camera: {
-      spawn: {
-        position: [0, 1.7, 9.2],
-        target: [0, 1.5, 0],
-        fov_deg: 60,
-      },
-      bounds: {
-        min: [-15.2, 0.2, -8.8],
-        max: [15.2, 6.5, 8.8],
-      },
-    },
     provenance: {
+      generator: '@wgif/court-builder@0.1.0',
       origin: 'procedural',
-      generator: {
-        name: '@wgif/court-builder',
-        version: '0.1.0',
-        seed: 1464293702,
-      },
+      seed: 1464293702,
     },
   };
 

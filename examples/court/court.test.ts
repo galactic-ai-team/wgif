@@ -28,7 +28,7 @@ function inspectFirstZipEntry(zipBytes: Uint8Array): {
   return { name, method, compressedSize, uncompressedSize, payload };
 }
 
-describe('Phase 1 World Generation — RC1 Validator Alignment', () => {
+describe('Phase 1 World Generation — GPT-6 v0.1 RC1 Schema Compliance', () => {
   it('compresses deterministically with browser-safe zlib and round-trips via standard inflate', () => {
     const sample = new TextEncoder().encode(
       'WGIF-court-plank-repeat-pattern-WGIF-court-plank-repeat-pattern-1234567890'
@@ -48,24 +48,36 @@ describe('Phase 1 World Generation — RC1 Validator Alignment', () => {
     expect(Buffer.compare(run1.wgifBytes, run2.wgifBytes)).toBe(0);
   });
 
-  it('emits RC1 manifest fields (wgif, id, title, creator, created, mode, entry, files) and stores manifest.json FIRST with method=0 (STORED)', () => {
+  it('satisfies all 5 GPT-6 v0.1 RC1 schema requirements and stores manifest.json FIRST with method=0', () => {
     const { manifest, wgifBytes } = buildReproducibleCourtArtifacts();
 
-    expect(manifest.wgif).toBe('0.1');
-    expect(typeof manifest.id).toBe('string');
-    expect(typeof manifest.title).toBe('string');
-    expect(typeof manifest.creator).toBe('string');
-    expect(manifest.created).toBe('2026-01-01T00:00:00.000Z');
-    expect(manifest.mode).toBe('walk');
-    expect(manifest.entry).toEqual({
-      scene: 'scene/court.glb',
-      preview: 'preview.gif',
+    // (1) creator is an object
+    expect(typeof manifest.creator).toBe('object');
+    expect(manifest.creator.name).toBe('Galactic AI Team');
+
+    // (2) mode is in enum ['locked', 'editable']
+    expect(['locked', 'editable']).toContain(manifest.mode);
+
+    // (3) files[] entries have size (bytes) and mediaType
+    expect(manifest.files.length).toBe(2);
+    for (const f of manifest.files) {
+      expect(typeof f.path).toBe('string');
+      expect(typeof f.sha256).toBe('string');
+      expect(typeof f.size).toBe('number');
+      expect(f.size).toBeGreaterThan(0);
+      expect(typeof f.mediaType).toBe('string');
+    }
+
+    // (4) provenance.generator is a string
+    expect(typeof manifest.provenance.generator).toBe('string');
+    expect(manifest.provenance.generator).toBe('@wgif/court-builder@0.1.0');
+
+    // (5) root spawn { position, lookAt } instead of camera
+    expect('camera' in manifest).toBe(false);
+    expect(manifest.spawn).toEqual({
+      position: [0, 1.7, 9.2],
+      lookAt: [0, 1.5, 0],
     });
-    expect(Array.isArray(manifest.files)).toBe(true);
-    expect(manifest.files.map((f) => f.path)).toEqual([
-      'preview.gif',
-      'scene/court.glb',
-    ]);
 
     // Verify first ZIP entry is manifest.json and STORED (method === 0)
     const first = inspectFirstZipEntry(wgifBytes);
@@ -75,8 +87,13 @@ describe('Phase 1 World Generation — RC1 Validator Alignment', () => {
 
     const parsed = JSON.parse(new TextDecoder().decode(first.payload));
     expect(parsed.wgif).toBe('0.1');
-    expect(parsed.entry.scene).toBe('scene/court.glb');
-    expect(parsed.entry.preview).toBe('preview.gif');
+    expect(parsed.creator).toEqual({
+      name: 'Galactic AI Team',
+      url: 'https://github.com/galactic-ai-team/wgif',
+    });
+    expect(parsed.mode).toBe('editable');
+    expect(parsed.provenance.generator).toBe('@wgif/court-builder@0.1.0');
+    expect(parsed.spawn.lookAt).toEqual([0, 1.5, 0]);
   });
 
   it('meets Spec 5.2 constraints on preview.gif (<= 512 px, <= 256 KB, valid GIF89a)', () => {
@@ -97,7 +114,7 @@ describe('Phase 1 World Generation — RC1 Validator Alignment', () => {
     expect(previewGif.byteLength).toBeLessThanOrEqual(256 * 1024);
   });
 
-  it('generates a displaced 3D world .wgif from a single RGB image with RC1 manifest STORED first', async () => {
+  it('generates a displaced 3D world .wgif from a single RGB image with RC1 schema-compliant manifest STORED first', async () => {
     const w = 32;
     const h = 24;
     const rgba = new Uint8Array(w * h * 4);
@@ -118,20 +135,23 @@ describe('Phase 1 World Generation — RC1 Validator Alignment', () => {
     });
 
     expect(res.manifest.wgif).toBe('0.1');
-    expect(res.manifest.mode).toBe('orbit');
-    expect(res.manifest.entry).toEqual({
-      scene: 'scene/world.glb',
-      preview: 'preview.gif',
+    expect(typeof res.manifest.creator).toBe('object');
+    expect(['locked', 'editable']).toContain(res.manifest.mode);
+    expect(res.manifest.spawn).toEqual({
+      position: [0, 1.4, 0.2],
+      lookAt: [0, 1.4, -2.5],
     });
-    expect(res.manifest.files.length).toBe(2);
+    expect(typeof res.manifest.provenance.generator).toBe('string');
+    expect(res.manifest.files[0]?.mediaType).toBe('image/gif');
+    expect(typeof res.manifest.files[0]?.size).toBe('number');
+    expect(res.manifest.files[1]?.mediaType).toBe('model/gltf-binary');
 
     const first = inspectFirstZipEntry(res.wgifBytes);
     expect(first.name).toBe('manifest.json');
     expect(first.method).toBe(0);
 
     const parsed = JSON.parse(new TextDecoder().decode(first.payload));
-    expect(parsed.wgif).toBe('0.1');
-    expect(parsed.creator).toContain('@wgif/img2world');
-    expect(parsed.provenance.origin).toBe('image-to-world');
+    expect(parsed.provenance.generator).toBe('@wgif/img2world@0.1.0');
+    expect(parsed.spawn.lookAt).toEqual([0, 1.4, -2.5]);
   });
 });
