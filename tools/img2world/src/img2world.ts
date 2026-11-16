@@ -32,30 +32,121 @@ export interface Img2WorldOutput {
   manifest: Rc1Manifest;
 }
 
+export interface EstimatedDepthResult {
+  depth: Float32Array;
+  depthWidth: number;
+  depthHeight: number;
+  modelUsed: string;
+  license: string;
+}
+
 /**
- * Estimates normalized inverse depth [0..1] on CPU.
+ * Bilinearly resamples a 2D Float32 depth map from (srcW x srcH) to (dstW x dstH).
+ */
+export function resampleDepthBilinear(
+  src: Float32Array,
+  srcW: number,
+  srcH: number,
+  dstW: number,
+  dstH: number
+): Float32Array {
+  if (srcW === dstW && srcH === dstH) {
+    return new Float32Array(src);
+  }
+  const out = new Float32Array(dstW * dstH);
+  for (let y = 0; y < dstH; y++) {
+    const gy = dstH > 1 ? (y / (dstH - 1)) * (srcH - 1) : 0;
+    const y0 = Math.floor(gy);
+    const y1 = Math.min(srcH - 1, y0 + 1);
+    const wy = gy - y0;
+
+    for (let x = 0; x < dstW; x++) {
+      const gx = dstW > 1 ? (x / (dstW - 1)) * (srcW - 1) : 0;
+      const x0 = Math.floor(gx);
+      const x1 = Math.min(srcW - 1, x0 + 1);
+      const wx = gx - x0;
+
+      const v00 = src[y0 * srcW + x0]!;
+      const v10 = src[y0 * srcW + x1]!;
+      const v01 = src[y1 * srcW + x0]!;
+      const v11 = src[y1 * srcW + x1]!;
+
+      const top = v00 * (1 - wx) + v10 * wx;
+      const bot = v01 * (1 - wx) + v11 * wx;
+      out[y * dstW + x] = top * (1 - wy) + bot * wy;
+    }
+  }
+  return out;
+}
+
+/**
+ * Applies a 3x3 edge-preserving median filter to suppress quantization stair-stepping
+ * and isolated depth spikes before meshing.
+ */
+export function medianFilter3x3(
+  src: Float32Array,
+  width: number,
+  height: number
+): Float32Array {
+  const out = new Float32Array(width * height);
+  const win = new Float32Array(9);
+  for (let y = 0; y < height; y++) {
+    const ym1 = Math.max(0, y - 1);
+    const yp1 = Math.min(height - 1, y + 1);
+    for (let x = 0; x < width; x++) {
+      const xm1 = Math.max(0, x - 1);
+      const xp1 = Math.min(width - 1, x + 1);
+      win[0] = src[ym1 * width + xm1]!;
+      win[1] = src[ym1 * width + x]!;
+      win[2] = src[ym1 * width + xp1]!;
+      win[3] = src[y * width + xm1]!;
+      win[4] = src[y * width + x]!;
+      win[5] = src[y * width + xp1]!;
+      win[6] = src[yp1 * width + xm1]!;
+      win[7] = src[yp1 * width + x]!;
+      win[8] = src[yp1 * width + xp1]!;
+      win.sort();
+      out[y * width + x] = win[4]!;
+    }
+  }
+  return out;
+}
+
+/**
+ * Estimates normalized inverse depth [0..1] on CPU strictly offline.
  * Uses @huggingface/transformers (onnx-community/depth-anything-v2-small, Apache-2.0)
- * when available and syntheticDepth is false; falls back to deterministic geometric prior in CI.
+ * from local `.cache/models` (`allowRemoteModels = false`); falls back to deterministic prior.
  */
 export async function estimateMonocularDepth(
   imageRgba: Uint8Array,
   width: number,
   height: number,
   options: { syntheticDepth?: boolean; modelId?: string } = {}
-): Promise<{ depth: Float32Array; modelUsed: string; license: string }> {
+): Promise<EstimatedDepthResult> {
   const modelId = options.modelId ?? 'onnx-community/depth-anything-v2-small';
 
   if (!options.syntheticDepth) {
     try {
       const moduleName = '@huggingface/transformers';
       const transformers = (await import(/* @vite-ignore */ moduleName)) as {
-        env: { allowLocalModels: boolean; cacheDir: string };
+        env: {
+          allowLocalModels: boolean;
+          allowRemoteModels: boolean;
+          cacheDir: string;
+        };
         pipeline: (
           task: string,
           model: string,
           opts: { device: string; dtype: string }
         ) => Promise<
-          (img: unknown) => Promise<{ predicted_depth: { data: Float32Array } }>
+          (img: unknown) => Promise<{
+            predicted_depth: {
+              data: Float32Array;
+              dims?: number[];
+              width?: number;
+              height?: number;
+            };
+          }>
         >;
         RawImage: new (
           data: Uint8Array,
@@ -65,6 +156,7 @@ export async function estimateMonocularDepth(
         ) => unknown;
       };
       transformers.env.allowLocalModels = true;
+      transformers.env.allowRemoteModels = false;
       transformers.env.cacheDir = '.cache/models';
       const pipe = await transformers.pipeline('depth-estimation', modelId, {
         device: 'cpu',
@@ -72,9 +164,18 @@ export async function estimateMonocularDepth(
       });
       const rawImg = new transformers.RawImage(imageRgba, width, height, 4);
       const result = await pipe(rawImg);
-      const raw = result.predicted_depth.data;
+      const pred = result.predicted_depth;
+      const raw = pred.data;
+      const dH =
+        pred.height ??
+        (pred.dims && pred.dims.length >= 2 ? pred.dims[pred.dims.length - 2]! : height);
+      const dW =
+        pred.width ??
+        (pred.dims && pred.dims.length >= 2 ? pred.dims[pred.dims.length - 1]! : width);
       return {
-        depth: normalizeFloatMap(raw, width * height),
+        depth: normalizeFloatMap(raw, dW * dH),
+        depthWidth: dW,
+        depthHeight: dH,
         modelUsed: modelId,
         license: 'Apache-2.0',
       };
@@ -98,6 +199,8 @@ export async function estimateMonocularDepth(
   }
   return {
     depth: normalizeFloatMap(depth, width * height),
+    depthWidth: width,
+    depthHeight: height,
     modelUsed: 'deterministic-geometric-prior-v1',
     license: 'MIT',
   };
@@ -132,11 +235,33 @@ export async function buildWorldFromImage(
   const depthScale = opts.depthScale ?? 2.2;
   const maxStretch = opts.maxEdgeStretch ?? 0.28;
 
-  const { depth, modelUsed, license } = await estimateMonocularDepth(
-    opts.imageRgba,
+  const {
+    depth: rawDepth,
+    depthWidth,
+    depthHeight,
+    modelUsed,
+    license,
+  } = await estimateMonocularDepth(opts.imageRgba, opts.width, opts.height, {
+    syntheticDepth: opts.syntheticDepth,
+    modelId: opts.modelId,
+  });
+
+  // 1) Resample depth tensor to image dimensions (if needed) and apply 3x3 median filter
+  const imageAlignedDepth = resampleDepthBilinear(
+    rawDepth,
+    depthWidth,
+    depthHeight,
+    opts.width,
+    opts.height
+  );
+  const filteredDepth = medianFilter3x3(imageAlignedDepth, opts.width, opts.height);
+  // 2) Resample filtered depth to the target mesh grid (gw x gh)
+  const gridDepth = resampleDepthBilinear(
+    filteredDepth,
     opts.width,
     opts.height,
-    { syntheticDepth: opts.syntheticDepth, modelId: opts.modelId }
+    gw,
+    gh
   );
 
   const aspect = opts.width / opts.height;
@@ -146,21 +271,17 @@ export async function buildWorldFromImage(
   const positions = new Float32Array(vertCount * 3);
   const normals = new Float32Array(vertCount * 3);
   const uvs = new Float32Array(vertCount * 2);
-  const gridDepth = new Float32Array(vertCount);
 
   for (let gy = 0; gy < gh; gy++) {
     const v = gy / (gh - 1);
-    const sy = Math.min(opts.height - 1, Math.floor(v * (opts.height - 1)));
     for (let gx = 0; gx < gw; gx++) {
       const u = gx / (gw - 1);
-      const sx = Math.min(opts.width - 1, Math.floor(u * (opts.width - 1)));
-      const d = depth[sy * opts.width + sx]!;
+      const vi = gy * gw + gx;
+      const d = gridDepth[vi]!;
       const zDist = 1.6 + (1.0 - d) * depthScale;
       const ndcX = (u - 0.5) * 2;
       const ndcY = (0.5 - v) * 2;
 
-      const vi = gy * gw + gx;
-      gridDepth[vi] = d;
       positions[vi * 3] = ndcX * aspect * tanHalfFov * zDist;
       positions[vi * 3 + 1] = ndcY * tanHalfFov * zDist + 1.4;
       positions[vi * 3 + 2] = -zDist;
@@ -205,7 +326,7 @@ export async function buildWorldFromImage(
   const glbBytes = packSingleMeshGlb(positions, normals, uvs, indices, pngBytes);
   const previewGifBytes = renderDepthPreviewGif(
     opts.imageRgba,
-    depth,
+    filteredDepth,
     opts.width,
     opts.height
   );
@@ -279,7 +400,7 @@ export async function buildWorldFromImage(
     glbBytes,
     previewGifBytes,
     wgifBytes,
-    depthMap: depth,
+    depthMap: filteredDepth,
     manifest,
   };
 }
@@ -350,6 +471,7 @@ function packSingleMeshGlb(
 
   const json = {
     asset: { version: '2.0', generator: '@wgif/img2world' },
+    extensionsUsed: ['KHR_materials_unlit'],
     scene: 0,
     scenes: [{ nodes: [0] }],
     nodes: [{ name: 'DisplacedDepthWorld', mesh: 0 }],
@@ -374,6 +496,9 @@ function packSingleMeshGlb(
           baseColorTexture: { index: 0 },
           metallicFactor: 0.0,
           roughnessFactor: 0.9,
+        },
+        extensions: {
+          KHR_materials_unlit: {},
         },
       },
     ],

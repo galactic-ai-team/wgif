@@ -9,6 +9,7 @@
   "include": [
     "src/**/*.ts",
     "src/png-decode.ts",
+    "src/fetch-model.ts",
     "../../examples/court/src/prng.ts",
     "../../examples/court/src/pack-court.ts",
     "../../examples/court/src/court-builder.ts"
