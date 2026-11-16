@@ -157,18 +157,60 @@ function injectCourtVisualPolishGlb(baseGlb: Uint8Array): Uint8Array {
     // 3. Key / Free-Throw Lane Perimeter & Hash Marks
     const keyHalfW = 2.45;
     const keyLen = 5.8;
+    const hashOffsets = [1.75, 2.65, 3.55, 4.45];
+    const hashLen = 0.45;
     if (alongX) {
       const baseLineX = rx + sign * 1.2;
       const ftLineX = baseLineX - sign * keyLen;
-      pushFloorRibbonSegment(baseLineX, rz - keyHalfW, ftLineX, rz - keyHalfW, 0.05, 0.0035);
-      pushFloorRibbonSegment(baseLineX, rz + keyHalfW, ftLineX, rz + keyHalfW, 0.05, 0.0035);
-      pushFloorRibbonSegment(ftLineX, rz - keyHalfW, ftLineX, rz + keyHalfW, 0.05, 0.0035);
+      pushFloorRibbonSegment(baseLineX, rz - keyHalfW, ftLineX, rz - keyHalfW, 0.06, 0.004);
+      pushFloorRibbonSegment(baseLineX, rz + keyHalfW, ftLineX, rz + keyHalfW, 0.06, 0.004);
+      pushFloorRibbonSegment(ftLineX, rz - keyHalfW, ftLineX, rz + keyHalfW, 0.06, 0.004);
+      for (let hi = 0; hi < hashOffsets.length; hi++) {
+        const hx = baseLineX - sign * hashOffsets[hi]!;
+        const tickW = hi === 0 ? 0.18 : 0.08;
+        pushFloorRibbonSegment(
+          hx,
+          rz - keyHalfW,
+          hx,
+          rz - (keyHalfW + hashLen),
+          tickW,
+          0.004
+        );
+        pushFloorRibbonSegment(
+          hx,
+          rz + keyHalfW,
+          hx,
+          rz + (keyHalfW + hashLen),
+          tickW,
+          0.004
+        );
+      }
     } else {
       const baseLineZ = rz + sign * 1.2;
       const ftLineZ = baseLineZ - sign * keyLen;
-      pushFloorRibbonSegment(rx - keyHalfW, baseLineZ, rx - keyHalfW, ftLineZ, 0.05, 0.0035);
-      pushFloorRibbonSegment(rx + keyHalfW, baseLineZ, rx + keyHalfW, ftLineZ, 0.05, 0.0035);
-      pushFloorRibbonSegment(rx - keyHalfW, ftLineZ, rx + keyHalfW, ftLineZ, 0.05, 0.0035);
+      pushFloorRibbonSegment(rx - keyHalfW, baseLineZ, rx - keyHalfW, ftLineZ, 0.06, 0.004);
+      pushFloorRibbonSegment(rx + keyHalfW, baseLineZ, rx + keyHalfW, ftLineZ, 0.06, 0.004);
+      pushFloorRibbonSegment(rx - keyHalfW, ftLineZ, rx + keyHalfW, ftLineZ, 0.06, 0.004);
+      for (let hi = 0; hi < hashOffsets.length; hi++) {
+        const hz = baseLineZ - sign * hashOffsets[hi]!;
+        const tickW = hi === 0 ? 0.18 : 0.08;
+        pushFloorRibbonSegment(
+          rx - keyHalfW,
+          hz,
+          rx - (keyHalfW + hashLen),
+          hz,
+          tickW,
+          0.004
+        );
+        pushFloorRibbonSegment(
+          rx + keyHalfW,
+          hz,
+          rx + (keyHalfW + hashLen),
+          hz,
+          tickW,
+          0.004
+        );
+      }
     }
   }
 
