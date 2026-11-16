@@ -52,6 +52,12 @@ describe('Nova model descriptors integrated into hardened RC1 validator', () => 
     expect(await warningCodes([{ ...onnx, fallback: undefined }], withOnnx)).not.toContain('requires.onnx-unneeded');
     // No warning when runtime.onnx is not required at all (the court case).
     expect(await warningCodes([onnx, rules])).not.toContain('requires.onnx-unneeded');
+    // Zero-ONNX case: requiring runtime.onnx while the world ships no ONNX
+    // model at all — or only rules models — is equally unneeded.
+    const noOnnx = await world([], {}, withOnnx);
+    expect(noOnnx.report.ok).toBe(true);
+    expect(noOnnx.report.warnings.map((w) => w.code)).toContain('requires.onnx-unneeded');
+    expect(await warningCodes([rules], withOnnx)).toContain('requires.onnx-unneeded');
   });
 
   it('rejects bad fallback identity, purpose and runtime', async () => {

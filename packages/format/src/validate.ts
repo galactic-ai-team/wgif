@@ -155,7 +155,8 @@ export async function validateWorld(manifest: unknown, files: WgifFiles): Promis
   // SPEC §6: an ONNX model with a usable rules fallback is an optional
   // alternative, not a reason to require a general ONNX runtime. Warn (a
   // SHOULD NOT, not a MUST NOT) when requires[] claims runtime.onnx while
-  // every ONNX model has a usable same-purpose rules fallback.
+  // every ONNX model has a usable same-purpose rules fallback — or while
+  // the world ships no ONNX model at all.
   if ((m.requires ?? []).includes('runtime.onnx')) {
     const onnxModels = (m.models ?? []).filter((model) => model.runtime === 'onnx');
     const hasUsableFallback = (model: (typeof onnxModels)[number]): boolean => {
@@ -168,7 +169,13 @@ export async function validateWorld(manifest: unknown, files: WgifFiles): Promis
         model.purpose === target.purpose
       );
     };
-    if (onnxModels.length > 0 && onnxModels.every(hasUsableFallback))
+    if (onnxModels.length === 0)
+      warn(
+        'requires.onnx-unneeded',
+        'requires "runtime.onnx" but the world ships no ONNX model',
+        'runtime.onnx',
+      );
+    else if (onnxModels.every(hasUsableFallback))
       warn(
         'requires.onnx-unneeded',
         'requires "runtime.onnx" but every ONNX model has a usable rules fallback; a world with a usable rules fallback SHOULD NOT require runtime.onnx (SPEC §6)',

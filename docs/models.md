@@ -7,11 +7,15 @@ documented in `packages/ai/README.md`.
 
 ## Layout
 
-Models are **data**, not software shipped by the archive (SPEC §5.6): no
+Models are **data**, not software shipped by the archive (SPEC §6): no
 executable payloads, no scripts, no imported operators, no externally fetched
 runtime code. Every model file lives under `models/` at the archive root and
 is declared twice: once in `manifest.models[]` (the descriptor below) and once
 in `manifest.files[]` (path, size, sha256 — verified by the container checks).
+Only entries in `manifest.models[]` are discoverable: a file under `models/`
+with no descriptor is inert payload — the loader never sees it. (It still has
+to be listed in `files[]` with a correct hash and size, or the container
+checks reject the world.)
 
 ```
 models/rebounder.rules.json   # declarative state machine (the behaviour)
@@ -29,18 +33,38 @@ At most 64 descriptors, each with a unique `id` matching
 model is the behaviour, the ONNX model is the packaged alternative:
 
 ```json
-{ "id": "rebounder-rules", "path": "models/rebounder.rules.json",
-  "runtime": "rules", "purpose": "rebounder", "version": "0.1.0",
-  "inputs": [ { "name": "ball_position" }, "..." ],
-  "outputs": [ { "name": "velocity" }, "..." ],
-  "tickHz": 10, "deterministic": true, "seed": 7,
-  "license": "CC-BY-4.0", "sizeBytesMax": 65536 }
-{ "id": "rebounder-mlp", "path": "models/rebounder-mlp.onnx",
-  "runtime": "onnx", "purpose": "rebounder", "version": "0.1.0",
-  "inputs": [ { "name": "obs", "shape": [1, 14], "dtype": "float32" } ],
-  "outputs": [ { "name": "action", "shape": [1, 3], "dtype": "float32" } ],
-  "tickHz": 10, "deterministic": true, "seed": 7,
-  "license": "CC-BY-4.0", "fallback": "rebounder-rules", "sizeBytesMax": 51200 }
+[
+  { "id": "rebounder-rules", "path": "models/rebounder.rules.json",
+    "runtime": "rules", "purpose": "rebounder", "version": "0.1.0",
+    "inputs": [
+      { "name": "ball_position", "description": "Ball position [x, y, z] in meters." },
+      { "name": "ball_velocity", "description": "Ball velocity [x, y, z] in m/s." },
+      { "name": "ball_held_by", "description": "\"player\", \"rebounder\", or null." },
+      { "name": "player_position", "description": "Player position [x, y, z] in meters." },
+      { "name": "self_position", "description": "Rebounder position [x, y, z] in meters." }
+    ],
+    "outputs": [
+      { "name": "velocity", "description": "Move velocity [x, y, z] in m/s (y is always 0)." },
+      { "name": "pass_ball", "description": "True on the tick the ball is passed back to the player." },
+      { "name": "holding_ball", "description": "True while the rebounder carries the ball." }
+    ],
+    "tickHz": 10, "deterministic": true, "seed": 7,
+    "license": "CC-BY-4.0", "sizeBytesMax": 65536 },
+  { "id": "rebounder-mlp", "path": "models/rebounder-mlp.onnx",
+    "runtime": "onnx", "purpose": "rebounder", "version": "0.1.0",
+    "inputs": [
+      { "name": "obs", "shape": [1, 14], "dtype": "float32",
+        "description": "Features in order: ball_dx, ball_dz, ball_vx, ball_vz, player_dx, player_dz, home_dx, home_dz, held_by_self, held_by_player, ball_out_of_bounds, dist_to_ball, dist_to_player, dist_to_home. See @wgif/ai ONNX_OBS_FEATURES.",
+        "range": [-20, 20] }
+    ],
+    "outputs": [
+      { "name": "action", "shape": [1, 3], "dtype": "float32",
+        "description": "[vx, vz, pass_logit]; the ball is passed when pass_logit > 0.5.",
+        "range": [-6, 6] }
+    ],
+    "tickHz": 10, "deterministic": true, "seed": 7,
+    "license": "CC-BY-4.0", "fallback": "rebounder-rules", "sizeBytesMax": 51200 }
+]
 ```
 
 | Field | Rule |
@@ -73,7 +97,12 @@ oversize file (`models.oversize`) and a `sizeBytesMax` above 1 MiB (schema).
   rules first: the rules model is the live behaviour and the source of truth.
 - **Fallback:** only ONNX → rules, same `purpose`, no self-fallback, no
   missing target, no ONNX → ONNX, no chains. A broken ONNX model falls back
-  to its rules twin at load; a broken rules model is a hard error.
+  to its rules twin at load; a broken rules model is a hard error. Fallback
+  applies only to load failures: an ONNX model that fails to load —
+  unreadable bytes, a bad graph signature, a missing file — falls back to
+  its rules twin. It does not apply to a model that loads and then
+  misbehaves, and validation failures reject the world before any model
+  loads.
 - **Rules files** MUST be valid UTF-8 JSON. The state machine inside is
   validated by the loader (`@wgif/ai` `parseRulesModel`, fail-closed), not by
   the format validator.
@@ -81,13 +110,15 @@ oversize file (`models.oversize`) and a `sizeBytesMax` above 1 MiB (schema).
 ## Rules-only fallback when there is no ONNX runtime
 
 A world whose ONNX models all have a usable rules fallback does not need a
-general ONNX runtime, and MUST NOT claim to:
+general ONNX runtime, and SHOULD NOT require runtime.onnx solely for optional
+models with usable rules fallbacks:
 
 - If rules behaviour is required for complete playback, `requires[]` MUST
   contain `runtime.rules`. The court does: the rebounder NPC is required, so
   `requires: ["scene.glb", "runtime.rules"]`.
 - If every ONNX model has a usable same-purpose rules fallback, `requires[]`
-  SHOULD NOT contain `runtime.onnx`. The court does not require it.
+  SHOULD NOT contain `runtime.onnx`. The court does not require it. The same
+  applies when the world ships no ONNX model at all.
 - The proof player has **no** general ONNX runtime and claims no
   `runtime.onnx` capability: ONNX models run through the hand-rolled JS MLP
   evaluator (`packages/ai/src/jsmlp.ts`, no WASM), and `onnxruntime-web` is a
@@ -113,5 +144,6 @@ by the descriptor schema or `validateWorld()` — except one case, implemented
 in this patch as a **warning** (a SHOULD NOT, not a MUST NOT):
 
 - `requires.onnx-unneeded`: `requires[]` contains `runtime.onnx` while every
-  ONNX model in `models[]` has a usable same-purpose rules fallback. A world
-  with a usable rules fallback SHOULD NOT require `runtime.onnx`.
+  ONNX model in `models[]` has a usable same-purpose rules fallback — or while
+  the world ships no ONNX model at all. A world with a usable rules fallback
+  SHOULD NOT require `runtime.onnx`.
