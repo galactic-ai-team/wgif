@@ -34,6 +34,13 @@ const STICK_RADIUS = 56;
 const STICK_ZONE = 0.45;
 const MOVE_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ShiftLeft', 'ShiftRight', 'Space']);
 
+/**
+ * Only a press that starts on the 3D view itself looks around, moves or captures the mouse.
+ * Buttons and panels drawn over the view (Grab/Shoot, the result panel, the edit panel) keep their
+ * own clicks: a press on them must not capture the pointer, or the next click goes to the scene.
+ */
+export const startsOnScene = (target: EventTarget | null): boolean => (target as { tagName?: string } | null)?.tagName === 'CANVAS';
+
 const typing = (target: EventTarget | null): boolean => {
   const el = target as HTMLElement | null;
   return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
@@ -169,7 +176,7 @@ export class PlayerControls implements InputSource {
   }
 
   private pointerDown(e: PointerEvent): void {
-    if (!this.enabled) return;
+    if (!this.enabled || !startsOnScene(e.target)) return;
     if (e.pointerType === 'mouse') {
       if (e.button !== 0) return;
       if (this.locked) {
