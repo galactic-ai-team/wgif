@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { Vec3 } from '@wgif/format';
+import type { SceneOp } from './edit.js';
 import type { GameState, Interactions } from './interactions.js';
 import { LAYER_PROP, LAYER_SOLID, StaticColliders } from './sim/colliders.js';
 import { WorldRuntime } from './sim/runtime.js';
@@ -66,14 +67,59 @@ export interface SceneColliders {
 const PROP_RESTITUTION = 0.7;
 
 /**
+ * Applies layer operations to the scene graph: removes nodes, adds primitives, moves things.
+ * Returns the names it removed and anything it had to skip. Run this before building colliders.
+ */
+export function applySceneOps(scene: THREE.Object3D, ops: SceneOp[]): { removed: Set<string>; warnings: string[] } {
+  const removed = new Set<string>();
+  const warnings: string[] = [];
+  const v = new THREE.Vector3();
+  for (const op of ops) {
+    const nodes = findNodes(scene, op.id);
+    if (op.kind === 'remove') {
+      for (const node of nodes) node.removeFromParent();
+      removed.add(op.id);
+    } else if (op.kind === 'add') {
+      if (nodes.length > 0) {
+        warnings.push(`layer: cannot add "${op.id}", a node with that name exists`);
+        continue;
+      }
+      const geometry = op.primitive === 'box' ? new THREE.BoxGeometry(1, 1, 1) : op.primitive === 'sphere' ? new THREE.SphereGeometry(0.5, 24, 16) : new THREE.CylinderGeometry(0.5, 0.5, 1, 24);
+      const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: op.color, roughness: 0.75, metalness: 0.05 }));
+      mesh.name = op.id;
+      mesh.userData = { name: op.id, wgif: { collider: 'static', added: true } };
+      mesh.position.set(...op.position);
+      mesh.scale.set(...op.size);
+      scene.add(mesh);
+      removed.delete(op.id);
+    } else {
+      if (nodes.length === 0 && !removed.has(op.id)) warnings.push(`layer: nothing called "${op.id}" to move`);
+      for (const node of nodes) {
+        if (op.position) node.position.set(...op.position);
+        if (op.delta) {
+          // The delta is in world space; the node's translation is in its parent's space.
+          node.getWorldPosition(v).add(v2.set(...op.delta));
+          node.parent?.worldToLocal(v);
+          node.position.copy(v);
+        }
+        if (op.rotation) node.quaternion.set(...op.rotation).normalize();
+        if (op.scale) node.scale.set(...op.scale);
+      }
+    }
+  }
+  scene.updateWorldMatrix(true, true);
+  return { removed, warnings };
+}
+
+/**
  * Builds the collision world for a scene.
  *
  * Solid: the nodes listed in interactions.json `colliders.static` (if the file has no such list,
- * every node hinted `extras.wgif.collider: "static"`). Props
+ * every node hinted `extras.wgif.collider: "static"`), plus primitives added by layers. Props
  * (balls only): the nodes of a minigame's target triggers and nodes hinted `role: "target"`, so the
  * ball bounces off a rim it can see. Grabbable nodes move, so they are never static.
  */
-export function buildColliders(scene: THREE.Object3D, interactions: Interactions): SceneColliders {
+export function buildColliders(scene: THREE.Object3D, interactions: Interactions, removed: ReadonlySet<string> = new Set()): SceneColliders {
   const colliders = new StaticColliders();
   const warnings: string[] = [];
   const solid: string[] = [], props: string[] = [];
@@ -86,11 +132,12 @@ export function buildColliders(scene: THREE.Object3D, interactions: Interactions
     return [...names];
   };
 
-  for (const name of interactions.staticColliders ?? hinted('collider', 'static')) {
+  for (const name of new Set([...(interactions.staticColliders ?? hinted('collider', 'static')), ...hinted('added', true)])) {
     if (moving.has(name)) continue;
     const nodes = findNodes(scene, name);
     if (nodes.length === 0) {
-      warnings.push(`collider "${name}" is not a node in the scene`);
+      // A node a layer removed is meant to be gone; only a missing one is worth a warning.
+      if (!removed.has(name)) warnings.push(`collider "${name}" is not a node in the scene`);
       continue;
     }
     const triangles = nodes.flatMap(worldTriangles);
@@ -113,10 +160,15 @@ export function buildColliders(scene: THREE.Object3D, interactions: Interactions
   return { colliders, solid, props, warnings };
 }
 
-/** Builds the simulation for a document and its freshly parsed scene. `state` is where the world starts from. */
+/**
+ * Builds the simulation for a document and its freshly parsed scene: applies the layers to the
+ * scene graph, derives the colliders and starts the runtime. `state` is where the world starts from.
+ */
 export function createRuntime(doc: WorldDocument, scene: THREE.Object3D, state: GameState = doc.initialState): { runtime: WorldRuntime; built: SceneColliders } {
   scene.updateWorldMatrix(true, true);
-  const built = buildColliders(scene, doc.interactions);
+  const applied = applySceneOps(scene, doc.sceneOps);
+  const built = buildColliders(scene, doc.interactions, applied.removed);
+  built.warnings.unshift(...applied.warnings);
   const runtime = new WorldRuntime({
     interactions: doc.interactions,
     colliders: built.colliders,
@@ -129,3 +181,5 @@ export function createRuntime(doc: WorldDocument, scene: THREE.Object3D, state: 
   });
   return { runtime, built };
 }
+
+const v2 = new THREE.Vector3();
