@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createRebounder } from '../src/ai.js';
 import type { EditOp } from '../src/edit.js';
 import { exportWorld, mergeRawState } from '../src/exporter.js';
 import { readJson } from '../src/interactions.js';
@@ -142,6 +143,41 @@ describe('export: layered world', () => {
     await expect(exportWorld(doc, { ops: [{ op: 'spawn', position: [0, 1.7, 7] }] })).rejects.toMatchObject({ code: 'unsupported' });
     await expect(exportWorld(doc, { ops: [{ op: 'rules', minigame: 'shootout', rules: { durationSec: 30 } }] })).rejects.toMatchObject({ code: 'unsupported' });
     await expect(exportWorld(doc, { ops: [] })).rejects.toMatchObject({ code: 'nothing' });
+  });
+});
+
+describe('export: embedded models', () => {
+  // The byte checks above cover world.glb and preview.png, but a dropped
+  // models[] entry would pass validation (an undeclared models/ file is
+  // legal) and silently lose the NPC, so the descriptors get their own
+  // assertions, in both export modes.
+  it('keeps the rebounder models byte-for-byte with their manifest entries, in an editable export', async () => {
+    const { doc } = await open();
+    const before = doc.world;
+    const result = await exportWorld(doc, { ops: [{ op: 'move', id: 'ball', position: [1, 0.12, 1] }], at: AT });
+    const out = await openWorld(result.bytes);
+    expect(out.report.ok).toBe(true);
+    for (const path of ['models/rebounder-mlp.onnx', 'models/rebounder.rules.json']) {
+      expect(out.files[path], path).toEqual(before.files[path]);
+      expect(out.manifest.files.find((f) => f.path === path)).toEqual(before.manifest.files.find((f) => f.path === path));
+    }
+    expect(out.manifest.models).toEqual(before.manifest.models);
+    // And the NPC is still discoverable from the exported copy, through the real player path.
+    expect(await createRebounder(out)).not.toBeNull();
+  });
+
+  it('keeps the rebounder models byte-for-byte with their manifest entries, in a layered export', async () => {
+    const { doc } = await open(await courtVariant({ mode: 'layered' }));
+    const before = doc.world;
+    const result = await exportWorld(doc, { ops: [{ op: 'move', id: 'ball', position: [-3, 0.12, 2] }], by: 'tester', at: AT });
+    const out = await openWorld(result.bytes);
+    expect(out.report.ok).toBe(true);
+    for (const path of ['models/rebounder-mlp.onnx', 'models/rebounder.rules.json']) {
+      expect(out.files[path], path).toEqual(before.files[path]);
+      expect(out.manifest.files.find((f) => f.path === path)).toEqual(before.manifest.files.find((f) => f.path === path));
+    }
+    expect(out.manifest.models).toEqual(before.manifest.models);
+    expect(await createRebounder(out)).not.toBeNull();
   });
 });
 
