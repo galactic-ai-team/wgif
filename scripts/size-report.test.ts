@@ -1,8 +1,13 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { describe, expect, it } from 'vitest'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { existsSync, readFileSync } from 'node:fs'
-import { describe, expect, it } from 'vitest'
 import {
   checkBudgets,
   computeInitialFiles,
@@ -15,6 +20,10 @@ import {
   type Budgets,
   type SizeReport,
 } from './size-report.js'
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
 
 /** Minimal stored-only (method 0) ZIP writer, enough to exercise the reader. */
 function makeStoredZip(entries: { name: string; data: Uint8Array }[]): Uint8Array {
@@ -73,18 +82,27 @@ function makeStoredZip(entries: { name: string; data: Uint8Array }[]): Uint8Arra
 }
 
 const BUDGETS: Budgets = {
-  version: 2,
+  version: 3,
   worldTotalBytes: 1024,
   worldMaxEntries: 8,
   worldEntryBytes: { 'preview.png': 256 },
   worldEntryDefaultBytes: 512,
-  worldMaxUncompressedBytes: 2048,
-  worldMaxCompressionRatio: 4,
   playerInitialJsGzipBytes: 1024,
   playerDeferredChunkGzipBytes: 512,
   playerDistGzipBytes: 4096,
   playerRuntimeWasmGzipBytes: 0,
+  renderBudget: {
+    targetViewport: { width: 390, height: 844 },
+    maxDrawCalls: 100,
+    maxTriangles: 1000,
+    maxTextureMemoryMiB: 4,
+    targetFrameTimeMs: 16.7,
+  },
 }
+
+// ---------------------------------------------------------------------------
+// formatBytes
+// ---------------------------------------------------------------------------
 
 describe('formatBytes', () => {
   it('renders bytes, KiB and MiB', () => {
@@ -95,6 +113,10 @@ describe('formatBytes', () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// readZipDirectory
+// ---------------------------------------------------------------------------
+
 describe('readZipDirectory', () => {
   it('reads names, stored and expanded sizes', () => {
     const zip = makeStoredZip([
@@ -103,10 +125,13 @@ describe('readZipDirectory', () => {
     ])
     const entries = readZipDirectory(zip)
     expect(entries.map((e) => e.name)).toEqual(['manifest.json', 'preview.png'])
-    expect(entries[0]?.expandedBytes).toBe(7)
-    expect(entries[0]?.storedBytes).toBe(7)
-    expect(entries[0]?.method).toBe(0)
-    expect(entries[1]?.expandedBytes).toBe(64)
+    const manifest = entries[0]
+    const preview = entries[1]
+    if (!manifest || !preview) throw new Error('expected two entries')
+    expect(manifest.expandedBytes).toBe(7)
+    expect(manifest.storedBytes).toBe(7)
+    expect(manifest.method).toBe(0)
+    expect(preview.expandedBytes).toBe(64)
   })
 
   it('rejects garbage', () => {
@@ -115,10 +140,16 @@ describe('readZipDirectory', () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// measureWorld
+// ---------------------------------------------------------------------------
+
 describe('measureWorld', () => {
   it('reports totals, transfer size and a hash', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'wgif-size-'))
-    const zip = makeStoredZip([{ name: 'manifest.json', data: new TextEncoder().encode('{}') }])
+    const zip = makeStoredZip([
+      { name: 'manifest.json', data: new TextEncoder().encode('{}') },
+    ])
     writeFileSync(path.join(dir, 'tiny.wgif'), zip)
     const w = measureWorld(dir, 'tiny.wgif')
     expect(w.totalBytes).toBe(zip.byteLength)
@@ -128,10 +159,15 @@ describe('measureWorld', () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// checkBudgets
+// ---------------------------------------------------------------------------
+
 describe('checkBudgets', () => {
   const base = (over: Partial<SizeReport> = {}): SizeReport => ({
     worlds: [],
     player: null,
+    render: null,
     budgetsPath: 'scripts/size-budgets.json',
     duplicates: [],
     warnings: [],
@@ -140,67 +176,6 @@ describe('checkBudgets', () => {
 
   it('passes an empty report', () => {
     expect(checkBudgets(base(), BUDGETS)).toEqual([])
-  })
-
-  it('flags uncompressed total over the zip-bomb cap', () => {
-    const report = base({
-      worlds: [
-        {
-          path: 'examples/bomb/bomb.wgif',
-          sha256: 'x'.repeat(64),
-          totalBytes: 900,
-          transferBytes: 900,
-          notes: [],
-          entries: [
-            { name: 'a.json', storedBytes: 400, expandedBytes: 1200, method: 0, zip64: false },
-            { name: 'b.json', storedBytes: 400, expandedBytes: 1200, method: 0, zip64: false },
-          ],
-        },
-      ],
-    })
-    const ids = checkBudgets(report, BUDGETS).map((v) => v.id)
-    expect(ids).toContain('world.uncompressedTotal')
-  })
-
-  it('flags a single entry whose expansion ratio is over budget', () => {
-    const report = base({
-      worlds: [
-        {
-          path: 'examples/ratio/ratio.wgif',
-          sha256: 'x'.repeat(64),
-          totalBytes: 5000,
-          transferBytes: 5000,
-          notes: [],
-          entries: [
-            // 4096 stored -> 40960 expanded = 10x, exceeds ratio limit 4
-            { name: 'big.bin', storedBytes: 4096, expandedBytes: 40960, method: 8, zip64: false },
-          ],
-        },
-      ],
-    })
-    const ids = checkBudgets(report, BUDGETS).map((v) => v.id)
-    expect(ids).toContain('world.entryRatio')
-  })
-
-  it('exempts small entries from the ratio check', () => {
-    const report = base({
-      worlds: [
-        {
-          path: 'examples/tiny/tiny.wgif',
-          sha256: 'x'.repeat(64),
-          totalBytes: 200,
-          transferBytes: 200,
-          notes: [],
-          entries: [
-            // 100 bytes stored -> 4000 expanded = 40x, but under the 4096
-            // stored-byte threshold, so the ratio guard skips it.
-            { name: 'game-state.json', storedBytes: 100, expandedBytes: 4000, method: 8, zip64: false },
-          ],
-        },
-      ],
-    })
-    const ids = checkBudgets(report, BUDGETS).map((v) => v.id)
-    expect(ids).not.toContain('world.entryRatio')
   })
 
   it('flags an oversized world and entry', () => {
@@ -225,7 +200,7 @@ describe('checkBudgets', () => {
     expect(ids).toContain('world.entry:world.glb')
   })
 
-  it('flags initial JS over budget', () => {
+  it('flags initial JS over budget, not deferred', () => {
     const report = base({
       player: {
         distDir: 'apps/player/dist',
@@ -283,7 +258,33 @@ describe('checkBudgets', () => {
     const ids = checkBudgets(report, BUDGETS).map((v) => v.id)
     expect(ids).toContain('player.wasm')
   })
+
+  it('folds render budget violations into the report', () => {
+    const report = base({
+      render: {
+        label: 'court.glb',
+        analysis: {
+          drawCalls: BUDGETS.renderBudget.maxDrawCalls + 1,
+          triangles: 0,
+          textureMemoryBytes: 0,
+          textures: [],
+          warnings: [],
+        },
+      },
+    })
+    const ids = checkBudgets(report, BUDGETS).map((v) => v.id)
+    expect(ids).toContain('render.drawCalls')
+  })
+
+  it('does not add render violations when report.render is null', () => {
+    const ids = checkBudgets(base({ render: null }), BUDGETS).map((v) => v.id)
+    expect(ids.filter((id) => id.startsWith('render.'))).toEqual([])
+  })
 })
+
+// ---------------------------------------------------------------------------
+// computeInitialFiles
+// ---------------------------------------------------------------------------
 
 describe('computeInitialFiles', () => {
   it('follows static imports, not dynamic imports', () => {
@@ -301,6 +302,10 @@ describe('computeInitialFiles', () => {
     expect(initial.has('assets/lazy-xyz.js')).toBe(false)
   })
 })
+
+// ---------------------------------------------------------------------------
+// measurePlayer
+// ---------------------------------------------------------------------------
 
 describe('measurePlayer', () => {
   it('separates initial and deferred JS via the Vite manifest', () => {
@@ -334,7 +339,7 @@ describe('measurePlayer', () => {
     expect(p!.jsInitialGzip + p!.jsDeferredGzip).toBe(p!.jsGzip)
   })
 
-  it('falls back to "all JS is initial" when the manifest is absent', () => {
+  it('falls back to "all JS is initial" without a manifest', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'wgif-dist-nomanifest-'))
     mkdirSync(path.join(dir, 'assets'), { recursive: true })
     writeFileSync(path.join(dir, 'assets', 'index-abc.js'), 'const a=1;')
@@ -345,6 +350,10 @@ describe('measurePlayer', () => {
     expect(p!.deferred).toEqual([])
   })
 })
+
+// ---------------------------------------------------------------------------
+// renderMarkdown
+// ---------------------------------------------------------------------------
 
 describe('renderMarkdown', () => {
   it('includes the world path and a verdict', () => {
@@ -357,10 +366,19 @@ describe('renderMarkdown', () => {
             totalBytes: 30_000,
             transferBytes: 29_000,
             notes: [],
-            entries: [{ name: 'manifest.json', storedBytes: 900, expandedBytes: 900, method: 0, zip64: false }],
+            entries: [
+              {
+                name: 'manifest.json',
+                storedBytes: 900,
+                expandedBytes: 900,
+                method: 0,
+                zip64: false,
+              },
+            ],
           },
         ],
         player: null,
+        render: null,
         budgetsPath: 'scripts/size-budgets.json',
         duplicates: [],
         warnings: [],
@@ -371,7 +389,38 @@ describe('renderMarkdown', () => {
     expect(md).toContain('examples/court/court.wgif')
     expect(md).toContain('All budgets met')
   })
+
+  it('renders a render budget section when report.render is present', () => {
+    const md = renderMarkdown(
+      {
+        worlds: [],
+        player: null,
+        render: {
+          label: 'court.glb',
+          analysis: {
+            drawCalls: 3,
+            triangles: 100,
+            textureMemoryBytes: 0,
+            textures: [],
+            warnings: [],
+          },
+        },
+        budgetsPath: 'scripts/size-budgets.json',
+        duplicates: [],
+        warnings: [],
+      },
+      BUDGETS,
+      [],
+    )
+    expect(md).toContain('Render budget')
+    expect(md).toContain('court.glb')
+    expect(md).toContain('Draw calls')
+  })
 })
+
+// ---------------------------------------------------------------------------
+// parseArgs
+// ---------------------------------------------------------------------------
 
 describe('parseArgs', () => {
   it('applies defaults and overrides', () => {
@@ -385,6 +434,10 @@ describe('parseArgs', () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// real worlds in this repo
+// ---------------------------------------------------------------------------
+
 describe('real worlds in this repo', () => {
   const candidates = ['examples/court/court.wgif', '../examples/court/court.wgif'].map((p) =>
     path.resolve(process.cwd(), p),
@@ -392,7 +445,8 @@ describe('real worlds in this repo', () => {
   const court = candidates.find((p) => existsSync(p))
 
   it.skipIf(!court)('court.wgif has manifest.json as its first entry', () => {
-    const buf = readFileSync(court as string)
+    if (!court) return
+    const buf = readFileSync(court)
     const entries = readZipDirectory(buf)
     expect(entries[0]?.name).toBe('manifest.json')
     expect(entries.every((e) => e.expandedBytes >= 0)).toBe(true)

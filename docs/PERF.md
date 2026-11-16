@@ -3,6 +3,32 @@
 Owner: Dee (OPTIMIZATION). This document is the *method* plus the fix list.
 The measurement table is filled per release on real hardware.
 
+## Court-world render budget (390×844, 60 fps)
+
+Phase One target: **390 × 844** logical pixels, iPhone 12/13/14 class,
+60 fps sustained. Machine-readable in `scripts/size-budgets.json` under
+`renderBudget`, enforced by `scripts/render-report.ts` (folded into
+`npm run size:report`).
+
+| Metric | Budget | Enforcement |
+|---|---:|---|
+| Draw calls | **150** | static — GLB primitive count |
+| Triangles | **150,000** | static — GLB accessor count |
+| Texture memory (GPU upload, with mipmaps) | **32 MiB** | static — GLB image dimensions × 4 B/px × 4/3 |
+| Frame time | **16.7 ms** | **manual only** — needs a real GPU |
+
+The first three are conservative upper bounds from the GLB alone: the
+analyzer assumes no batching and no instancing, so the real number after
+`mergeGeometries()` is lower. Texture memory is the *uploaded* size
+(RGBA8 + mipmaps, i.e. `w*h*4*4/3`), not the on-disk PNG size — a
+512×512 PNG that compresses to 40 KiB is 1.3 MiB on the GPU, and that
+gap is where mobile frame budgets die.
+
+Frame time cannot be verified statically. The 16.7 ms target is
+documented so the other three numbers have something to be conservative
+*relative to*; measure it on a real 390×844 phone each release and fill
+the table below.
+
 ## Why not CI
 
 CI has no GPU and headless WebGL lies about both frame time and draw-call
@@ -50,9 +76,10 @@ the jank that users actually feel.
 ## Regression guard that *can* live in CI
 
 Draw calls and triangles are properties of the scene graph, not the GPU.
-A Vitest test can build the court headlessly (the repo already has a headless
-player pipeline test) and assert `renderer.info.render.calls <= N` after one
-`render()`. I have not added it because it needs the player's scene-building
-module to be importable without a DOM; if Ace or Lumi can expose
-`buildCourtWorld(): THREE.Object3D`, the assertion is five lines and catches
-the most common regression (someone adds 40 meshes).
+The static GLB analyzer (`scripts/render-report.ts`) now checks these
+against `renderBudget` in `npm run size:report`, so a change that pushes
+the court over 150 draw calls or 150k triangles fails CI. This is a
+*static* check — it catches regressions from someone adding 40 meshes, not
+regressions from someone changing the material pipeline. The player's
+runtime `renderer.info.render.calls` can still differ from the static count
+after batching/instancing; that's why the analyzer is conservative.
