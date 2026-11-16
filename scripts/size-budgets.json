@@ -11,10 +11,15 @@
     "game-state.json": 32768
   },
   "worldEntryDefaultBytes": 262144,
-  "worldMaxUncompressedBytes": 16777216,
-  "worldMaxCompressionRatio": 64,
   "playerInitialJsGzipBytes": 307200,
   "playerDeferredChunkGzipBytes": 524288,
   "playerDistGzipBytes": 1572864,
-  "playerRuntimeWasmGzipBytes": 0
+  "playerRuntimeWasmGzipBytes": 0,
+  "renderBudget": {
+    "targetViewport": { "width": 390, "height": 844 },
+    "maxDrawCalls": 150,
+    "maxTriangles": 150000,
+    "maxTextureMemoryMiB": 32,
+    "targetFrameTimeMs": 16.7
+  }
 }

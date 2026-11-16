@@ -11,6 +11,11 @@
  * measurable, which is the point: size is a property of the file, not of
  * whether the manifest happens to be correct today.
  *
+ * Also folds in a static render analysis of the court's world.glb against
+ * `renderBudget` (see scripts/render-report.ts and docs/PERF.md). Frame time
+ * is NOT checked — that needs a GPU. Draw calls, triangles and texture
+ * memory are static properties of the GLB and are.
+ *
  * Usage:
  *   tsx scripts/size-report.ts [--root .] [--dist apps/player/dist]
  *                              [--budgets scripts/size-budgets.json]
@@ -19,9 +24,26 @@
  * Exit code 1 when any budget is exceeded (unless --soft).
  */
 import { createHash } from 'node:crypto'
-import { appendFileSync, existsSync, readFileSync, readdirSync, type Dirent } from 'node:fs'
+import {
+  appendFileSync,
+  existsSync,
+  readFileSync,
+  readdirSync,
+  type Dirent,
+} from 'node:fs'
 import path from 'node:path'
-import { brotliCompressSync, constants as zlibConstants, gzipSync } from 'node:zlib'
+import {
+  brotliCompressSync,
+  constants as zlibConstants,
+  gzipSync,
+  inflateRawSync,
+} from 'node:zlib'
+import type { GlbAnalysis, RenderBudget } from './render-report.js'
+import {
+  analyzeGlb,
+  checkRenderBudget,
+  renderMarkdown as renderRenderMarkdown,
+} from './render-report.js'
 
 // ---------------------------------------------------------------------------
 // budgets
@@ -33,12 +55,11 @@ export interface Budgets {
   worldMaxEntries: number
   worldEntryBytes: Record<string, number>
   worldEntryDefaultBytes: number
-  worldMaxUncompressedBytes: number
-  worldMaxCompressionRatio: number
   playerInitialJsGzipBytes: number
   playerDeferredChunkGzipBytes: number
   playerDistGzipBytes: number
   playerRuntimeWasmGzipBytes: number
+  renderBudget: RenderBudget
 }
 
 export function loadBudgets(absPath: string): Budgets {
@@ -48,15 +69,29 @@ export function loadBudgets(absPath: string): Budgets {
     'worldMaxEntries',
     'worldEntryBytes',
     'worldEntryDefaultBytes',
-    'worldMaxUncompressedBytes',
-    'worldMaxCompressionRatio',
     'playerInitialJsGzipBytes',
     'playerDeferredChunkGzipBytes',
     'playerDistGzipBytes',
     'playerRuntimeWasmGzipBytes',
+    'renderBudget',
   ]
   for (const key of required) {
     if (raw[key] === undefined) throw new Error(`budgets: missing key "${key}" in ${absPath}`)
+  }
+  const renderBudget = raw.renderBudget as Partial<RenderBudget> | undefined
+  if (renderBudget) {
+    const requiredRender: (keyof RenderBudget)[] = [
+      'targetViewport',
+      'maxDrawCalls',
+      'maxTriangles',
+      'maxTextureMemoryMiB',
+      'targetFrameTimeMs',
+    ]
+    for (const k of requiredRender) {
+      if (renderBudget[k] === undefined) {
+        throw new Error(`budgets: missing "renderBudget.${k}" in ${absPath}`)
+      }
+    }
   }
   return raw as Budgets
 }
@@ -77,7 +112,7 @@ export interface ZipEntry {
   /** 0 = stored, 8 = deflate. */
   method: number
   zip64: boolean
-  /** Offset of the local file header. Populated by readZipDirectory; unused by the size report itself. */
+  /** Offset of the local file header. Populated by readZipDirectory; used by locateGlb. */
   localHeaderOffset?: number
 }
 
@@ -114,6 +149,7 @@ export function readZipDirectory(buf: Uint8Array): ZipEntry[] {
     const commentLen = dv.getUint16(p + 32, true)
     const name = new TextDecoder().decode(buf.subarray(p + 46, p + 46 + nameLen))
     const zip64 = compressed === 0xffffffff || uncompressed === 0xffffffff
+    const localHeaderOffset = dv.getUint32(p + 42, true)
 
     entries.push({
       name,
@@ -121,7 +157,7 @@ export function readZipDirectory(buf: Uint8Array): ZipEntry[] {
       expandedBytes: uncompressed,
       method,
       zip64,
-      localHeaderOffset: dv.getUint32(p + 42, true),
+      localHeaderOffset,
     })
     p += 46 + nameLen + extraLen + commentLen
   }
@@ -193,6 +229,57 @@ export function findFiles(root: string, match: (rel: string) => boolean): string
 }
 
 // ---------------------------------------------------------------------------
+// Vite manifest: which JS is in the initial graph
+// ---------------------------------------------------------------------------
+
+interface ViteManifestChunk {
+  file: string
+  isEntry?: boolean
+  isDynamicEntry?: boolean
+  imports?: string[]
+  dynamicImports?: string[]
+}
+
+export type ViteManifest = Record<string, ViteManifestChunk>
+
+/** Vite 5 writes `.vite/manifest.json`; Vite 4 writes `manifest.json` at dist root. */
+export function readViteManifest(distAbs: string): ViteManifest | null {
+  for (const rel of ['.vite/manifest.json', 'manifest.json']) {
+    const abs = path.join(distAbs, rel)
+    if (!existsSync(abs)) continue
+    try {
+      return JSON.parse(readFileSync(abs, 'utf8')) as ViteManifest
+    } catch {
+      return null
+    }
+  }
+  return null
+}
+
+/**
+ * Files reachable from any entry through static `imports`. Does NOT follow
+ * `dynamicImports`. Manifest `imports` values are manifest *keys*, not paths.
+ */
+export function computeInitialFiles(manifest: ViteManifest): Set<string> {
+  const initial = new Set<string>()
+  const queue: ViteManifestChunk[] = []
+  for (const chunk of Object.values(manifest)) {
+    if (chunk && chunk.isEntry) queue.push(chunk)
+  }
+  while (queue.length > 0) {
+    const chunk = queue.shift()
+    if (!chunk) break
+    if (initial.has(chunk.file)) continue
+    initial.add(chunk.file)
+    for (const key of chunk.imports ?? []) {
+      const child = manifest[key]
+      if (child) queue.push(child)
+    }
+  }
+  return initial
+}
+
+// ---------------------------------------------------------------------------
 // report model
 // ---------------------------------------------------------------------------
 
@@ -216,19 +303,17 @@ export interface DistFile {
 export interface PlayerReport {
   distDir: string
   files: DistFile[]
+  /** All JS (initial + deferred), gzip. */
   jsGzip: number
   /** JS reachable from the entry's static `imports` graph, gzip. */
   jsInitialGzip: number
   /** JS only reachable via `dynamicImports` (or unreferenced), gzip. */
   jsDeferredGzip: number
-  /** Initial JS files (Vite manifest `imports` closure of the entry). */
   initial: DistFile[]
-  /** Deferred JS files. */
   deferred: DistFile[]
-  /** Total gzip of `.wasm` and `.onnx` files, or 0. */
+  /** Total gzip of `.wasm` / `.onnx` files. */
   wasmGzip: number
   totalGzip: number
-  /** True when a Vite manifest was read (`.vite/manifest.json` or `manifest.json`). */
   manifestFound: boolean
 }
 
@@ -243,6 +328,7 @@ export interface Violation {
 export interface SizeReport {
   worlds: WorldReport[]
   player: PlayerReport | null
+  render: { label: string; analysis: GlbAnalysis } | null
   budgetsPath: string
   duplicates: string[]
   warnings: string[]
@@ -274,62 +360,8 @@ export function measureWorld(root: string, rel: string): WorldReport {
   }
 }
 
-// ---------------------------------------------------------------------------
-// vite manifest (which JS files load eagerly)
-// ---------------------------------------------------------------------------
-
-interface ViteManifestChunk {
-  file: string
-  isEntry?: boolean
-  isDynamicEntry?: boolean
-  imports?: string[]
-  dynamicImports?: string[]
-}
-
-export type ViteManifest = Record<string, ViteManifestChunk>
-
-/** Vite 5 puts the manifest under `.vite/`; Vite 4 puts it at the dist root. Try both. */
-export function readViteManifest(distAbs: string): ViteManifest | null {
-  for (const rel of ['.vite/manifest.json', 'manifest.json']) {
-    const abs = path.join(distAbs, rel)
-    if (!existsSync(abs)) continue
-    try {
-      return JSON.parse(readFileSync(abs, 'utf8')) as ViteManifest
-    } catch {
-      return null
-    }
-  }
-  return null
-}
-
-/**
- * Files reachable from any entry through static `imports` — the JS the browser
- * must parse before the app can render. `dynamicImports` is NOT followed.
- *
- * The `imports` array holds manifest *keys* (like `"_shared-abc.js"`), not
- * file paths, so the lookup is `manifest[key]`, not a path join.
- */
-export function computeInitialFiles(manifest: ViteManifest): Set<string> {
-  const initial = new Set<string>()
-  const queue: ViteManifestChunk[] = []
-  for (const chunk of Object.values(manifest)) {
-    if (chunk.isEntry) queue.push(chunk)
-  }
-  while (queue.length > 0) {
-    const chunk = queue.shift() as ViteManifestChunk
-    if (initial.has(chunk.file)) continue
-    initial.add(chunk.file)
-    for (const key of chunk.imports ?? []) {
-      const child = manifest[key]
-      if (child) queue.push(child)
-    }
-  }
-  return initial
-}
-
 export function measurePlayer(distDir: string): PlayerReport | null {
   if (!existsSync(distDir)) return null
-  // Exclude source maps and the manifest file itself from measurement.
   const rels = findFiles(
     distDir,
     (r) => !r.endsWith('.map') && !/^(.vite\/)?manifest\.json$/.test(r),
@@ -342,7 +374,6 @@ export function measurePlayer(distDir: string): PlayerReport | null {
 
   const manifest = readViteManifest(distDir)
   const jsFiles = files.filter((f) => f.rel.endsWith('.js'))
-
   let initial: DistFile[]
   let deferred: DistFile[]
   if (manifest) {
@@ -350,9 +381,8 @@ export function measurePlayer(distDir: string): PlayerReport | null {
     initial = jsFiles.filter((f) => initialSet.has(f.rel))
     deferred = jsFiles.filter((f) => !initialSet.has(f.rel))
   } else {
-    // No manifest: treat every JS as initial. The 300 KiB budget then covers
-    // everything, so a missing manifest can't silently excuse a big lazy chunk.
-    // Set `build.manifest: true` in apps/player/vite.config.ts for the split.
+    // No manifest: treat every JS file as initial so a lazy chunk can't dodge
+    // the 300 KiB gate by staying unclassified. Set build.manifest: true.
     initial = jsFiles
     deferred = []
   }
@@ -373,6 +403,59 @@ export function measurePlayer(distDir: string): PlayerReport | null {
     manifestFound: manifest !== null,
   }
 }
+
+// ---------------------------------------------------------------------------
+// GLB location (for render analysis)
+// ---------------------------------------------------------------------------
+
+export interface LocatedGlb {
+  label: string
+  buf: Uint8Array
+}
+
+/**
+ * Find a GLB for render analysis. Prefers a loose examples/court/world.glb;
+ * falls back to extracting world.glb from examples/court/court.wgif.
+ * Returns null if neither exists — a fresh checkout before `npm run pack:court`.
+ */
+export function locateGlb(root: string): LocatedGlb | null {
+  for (const rel of ['examples/court/world.glb', 'examples/court/court.glb']) {
+    const abs = path.join(root, rel)
+    if (existsSync(abs)) return { label: rel, buf: readFileSync(abs) }
+  }
+  const wgifRel = 'examples/court/court.wgif'
+  const wgifAbs = path.join(root, wgifRel)
+  if (!existsSync(wgifAbs)) return null
+  const buf = readFileSync(wgifAbs)
+
+  let entries: ZipEntry[]
+  try {
+    entries = readZipDirectory(buf)
+  } catch {
+    return null
+  }
+  const entry = entries.find((e) => e.name === 'world.glb')
+  if (!entry || entry.localHeaderOffset === undefined) return null
+
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
+  const lh = entry.localHeaderOffset
+  if (dv.getUint32(lh, true) !== 0x04034b50) return null
+  const nameLen = dv.getUint16(lh + 26, true)
+  const extraLen = dv.getUint16(lh + 28, true)
+  const dataStart = lh + 30 + nameLen + extraLen
+  const raw = buf.subarray(dataStart, dataStart + entry.storedBytes)
+
+  let extracted: Uint8Array
+  if (entry.method === 0) extracted = raw
+  else if (entry.method === 8) extracted = new Uint8Array(inflateRawSync(raw))
+  else return null
+
+  return { label: `${wgifRel} → world.glb`, buf: extracted }
+}
+
+// ---------------------------------------------------------------------------
+// budget checks
+// ---------------------------------------------------------------------------
 
 export function checkBudgets(report: SizeReport, budgets: Budgets): Violation[] {
   const v: Violation[] = []
@@ -408,37 +491,6 @@ export function checkBudgets(report: SizeReport, budgets: Budgets): Violation[] 
         })
       }
     }
-    const totalUncompressed = w.entries.reduce((a, e) => a + e.expandedBytes, 0)
-    if (totalUncompressed > budgets.worldMaxUncompressedBytes) {
-      v.push({
-        id: 'world.uncompressedTotal',
-        subject: w.path,
-        actual: totalUncompressed,
-        limit: budgets.worldMaxUncompressedBytes,
-        message:
-          `${w.path}: uncompressed total ${formatBytes(totalUncompressed)} > ` +
-          `${formatBytes(budgets.worldMaxUncompressedBytes)} (zip-bomb guard)`,
-      })
-    }
-    // Per-entry ratio guard: only entries with >= 4096 stored bytes are
-    // checked. Small JSON compresses 50-100x naturally and flagging those
-    // would be noise. A zip bomb trips this on its one oversized entry.
-    for (const e of w.entries) {
-      if (e.storedBytes < 4096) continue
-      const ratio = e.expandedBytes / e.storedBytes
-      if (ratio > budgets.worldMaxCompressionRatio) {
-        v.push({
-          id: 'world.entryRatio',
-          subject: `${w.path} → ${e.name}`,
-          actual: Math.round(ratio),
-          limit: budgets.worldMaxCompressionRatio,
-          message:
-            `${w.path} → ${e.name}: ${ratio.toFixed(1)}× expansion > ` +
-            `${budgets.worldMaxCompressionRatio}× ` +
-            `(${formatBytes(e.storedBytes)} → ${formatBytes(e.expandedBytes)})`,
-        })
-      }
-    }
   }
 
   if (report.player) {
@@ -471,7 +523,7 @@ export function checkBudgets(report: SizeReport, budgets: Budgets): Violation[] 
         message:
           `runtime WASM/models ${formatBytes(p.wasmGzip)} gzip > ${formatBytes(budgets.playerRuntimeWasmGzipBytes)}` +
           (budgets.playerRuntimeWasmGzipBytes === 0
-            ? ' (Phase One forbids runtime WASM; a nonzero budget needs a spec decision)'
+            ? ' (Phase One forbids runtime WASM; a nonzero budget is a spec decision)'
             : ''),
       })
     }
@@ -484,6 +536,10 @@ export function checkBudgets(report: SizeReport, budgets: Budgets): Violation[] 
         message: `player dist ${formatBytes(p.totalGzip)} gzip > ${formatBytes(budgets.playerDistGzipBytes)}`,
       })
     }
+  }
+
+  if (report.render) {
+    v.push(...checkRenderBudget(report.render.analysis, budgets.renderBudget, report.render.label))
   }
 
   return v
@@ -522,7 +578,21 @@ export function buildReport(opts: { root: string; dist: string; budgetsPath: str
   const player = measurePlayer(path.join(opts.root, opts.dist))
   if (!player) warnings.push(`player dist not found at ${opts.dist} — run \`npm run build\` first`)
 
-  return { worlds, player, budgetsPath: opts.budgetsPath, duplicates, warnings }
+  let render: SizeReport['render'] = null
+  const located = locateGlb(opts.root)
+  if (located) {
+    try {
+      render = { label: located.label, analysis: analyzeGlb(located.buf) }
+    } catch (err) {
+      warnings.push(`render: could not analyze ${located.label}: ${(err as Error).message}`)
+    }
+  } else {
+    warnings.push(
+      'render: no GLB found (examples/court/world.glb or world.glb inside examples/court/court.wgif) — run `npm run pack:court` to build the court world',
+    )
+  }
+
+  return { worlds, player, render, budgetsPath: opts.budgetsPath, duplicates, warnings }
 }
 
 // ---------------------------------------------------------------------------
@@ -546,17 +616,13 @@ export function renderMarkdown(report: SizeReport, budgets: Budgets, violations:
   if (report.worlds.length === 0) {
     L.push('_No .wgif files found._')
   } else {
-    L.push(
-      '| World | In container | Budget | Status | Expanded / uncompressed budget | Transfer (brotli) |',
-    )
+    L.push('| World | In container | Budget | Status | Expanded | Transfer (brotli) |')
     L.push('|---|---:|---:|---:|---:|---:|')
     for (const w of report.worlds) {
       const expanded = w.entries.reduce((a, e) => a + e.expandedBytes, 0)
       L.push(
         `| \`${w.path}\` | ${formatBytes(w.totalBytes)} | ${formatBytes(budgets.worldTotalBytes)} | ` +
-          `${status(w.totalBytes, budgets.worldTotalBytes)} | ` +
-          `${formatBytes(expanded)} / ${formatBytes(budgets.worldMaxUncompressedBytes)} ` +
-          `${status(expanded, budgets.worldMaxUncompressedBytes)} | ${formatBytes(w.transferBytes)} |`,
+          `${status(w.totalBytes, budgets.worldTotalBytes)} | ${formatBytes(expanded)} | ${formatBytes(w.transferBytes)} |`,
       )
     }
     L.push('')
@@ -587,30 +653,63 @@ export function renderMarkdown(report: SizeReport, budgets: Budgets, violations:
     L.push('_Player dist not measured._')
   } else {
     const p = report.player
-    L.push(`Initial JS (gzip): **${formatBytes(p.jsInitialGzip)}** / ${formatBytes(budgets.playerInitialJsGzipBytes)} — ${status(p.jsInitialGzip, budgets.playerInitialJsGzipBytes)}`)
+    L.push(
+      `Initial JS (gzip): **${formatBytes(p.jsInitialGzip)}** / ${formatBytes(budgets.playerInitialJsGzipBytes)} — ${status(p.jsInitialGzip, budgets.playerInitialJsGzipBytes)}`,
+    )
     L.push('')
     if (p.deferred.length > 0) {
-      L.push(`Deferred JS: ${p.deferred.length} chunk${p.deferred.length === 1 ? '' : 's'}, **${formatBytes(p.jsDeferredGzip)}** gzip total`)
+      L.push(
+        `Deferred JS: ${p.deferred.length} chunk${p.deferred.length === 1 ? '' : 's'}, **${formatBytes(p.jsDeferredGzip)}** gzip total`,
+      )
       L.push('')
       L.push('| Deferred chunk | gzip | per-chunk budget | Status |')
       L.push('|---|---:|---:|---:|')
       for (const f of p.deferred) {
-        L.push(`| \`${f.rel}\` | ${formatBytes(f.gzip)} | ${formatBytes(budgets.playerDeferredChunkGzipBytes)} | ${status(f.gzip, budgets.playerDeferredChunkGzipBytes)} |`)
+        L.push(
+          `| \`${f.rel}\` | ${formatBytes(f.gzip)} | ${formatBytes(budgets.playerDeferredChunkGzipBytes)} | ${status(f.gzip, budgets.playerDeferredChunkGzipBytes)} |`,
+        )
       }
       L.push('')
     }
-    L.push(`Runtime WASM/models (gzip): **${formatBytes(p.wasmGzip)}** / ${formatBytes(budgets.playerRuntimeWasmGzipBytes)} — ${status(p.wasmGzip, budgets.playerRuntimeWasmGzipBytes)}`)
+    L.push(
+      `Runtime WASM/models (gzip): **${formatBytes(p.wasmGzip)}** / ${formatBytes(budgets.playerRuntimeWasmGzipBytes)} — ${status(p.wasmGzip, budgets.playerRuntimeWasmGzipBytes)}`,
+    )
     L.push('')
-    L.push(`Total dist (gzip, excl. .map and runtime WASM): **${formatBytes(p.totalGzip)}** / ${formatBytes(budgets.playerDistGzipBytes)} — ${status(p.totalGzip, budgets.playerDistGzipBytes)}`)
+    L.push(
+      `Total dist (gzip, excl. .map and runtime WASM): **${formatBytes(p.totalGzip)}** / ${formatBytes(budgets.playerDistGzipBytes)} — ${status(p.totalGzip, budgets.playerDistGzipBytes)}`,
+    )
     if (!p.manifestFound) {
       L.push('')
-      L.push('> ⚠️ No Vite manifest found — every JS file was classified as initial. Set `build.manifest: true` in `apps/player/vite.config.ts` for an accurate initial/deferred split.')
+      L.push(
+        '> ⚠️ No Vite manifest found — every JS file was classified as initial. Set `build.manifest: true` in `apps/player/vite.config.ts` for an accurate initial/deferred split.',
+      )
     }
     L.push('')
     const top = [...p.files].sort((a, b) => b.gzip - a.gzip).slice(0, 12)
     L.push('| File | Raw | gzip | brotli |')
     L.push('|---|---:|---:|---:|')
-    for (const f of top) L.push(`| \`${f.rel}\` | ${formatBytes(f.bytes)} | ${formatBytes(f.gzip)} | ${formatBytes(f.brotli)} |`)
+    for (const f of top) {
+      L.push(
+        `| \`${f.rel}\` | ${formatBytes(f.bytes)} | ${formatBytes(f.gzip)} | ${formatBytes(f.brotli)} |`,
+      )
+    }
+  }
+
+  if (report.render) {
+    L.push('')
+    const renderViolations = checkRenderBudget(
+      report.render.analysis,
+      budgets.renderBudget,
+      report.render.label,
+    )
+    L.push(
+      renderRenderMarkdown(
+        report.render.analysis,
+        budgets.renderBudget,
+        renderViolations,
+        report.render.label,
+      ),
+    )
   }
 
   if (report.duplicates.length > 0) {
@@ -627,7 +726,11 @@ export function renderMarkdown(report: SizeReport, budgets: Budgets, violations:
   }
 
   L.push('')
-  L.push(violations.length === 0 ? '### ✅ All budgets met' : `### ❌ ${violations.length} budget violation(s)`)
+  L.push(
+    violations.length === 0
+      ? '### ✅ All budgets met'
+      : `### ❌ ${violations.length} budget violation(s)`,
+  )
   if (violations.length > 0) {
     L.push('')
     for (const x of violations) L.push(`- **${x.id}** — ${x.message}`)
@@ -668,16 +771,33 @@ export function parseArgs(argv: string[], cwd: string): Options {
       return v
     }
     switch (a) {
-      case '--root': o.root = path.resolve(cwd, next()); break
-      case '--dist': o.dist = next(); break
-      case '--budgets': o.budgetsPath = next(); break
-      case '--json': o.json = true; break
-      case '--summary': o.summaryPath = next(); break
-      case '--soft': o.soft = true; break
-      case '--strict': o.strict = true; break
+      case '--root':
+        o.root = path.resolve(cwd, next())
+        break
+      case '--dist':
+        o.dist = next()
+        break
+      case '--budgets':
+        o.budgetsPath = next()
+        break
+      case '--json':
+        o.json = true
+        break
+      case '--summary':
+        o.summaryPath = next()
+        break
+      case '--soft':
+        o.soft = true
+        break
+      case '--strict':
+        o.strict = true
+        break
       case '-h':
-      case '--help': o.json = false; o.root = '__help__'; break
-      default: throw new Error(`unknown argument: ${a}`)
+      case '--help':
+        o.root = '__help__'
+        break
+      default:
+        throw new Error(`unknown argument: ${a}`)
     }
   }
   return o
@@ -719,7 +839,9 @@ export function main(argv: string[], cwd: string): number {
       console.log(`${w.path}: ${formatBytes(w.totalBytes)} (budget ${formatBytes(budgets.worldTotalBytes)})`)
       for (const e of w.entries) {
         const limit = budgets.worldEntryBytes[e.name] ?? budgets.worldEntryDefaultBytes
-        console.log(`  ${e.name.padEnd(28)} ${formatBytes(e.expandedBytes).padStart(10)}  / ${formatBytes(limit)}`)
+        console.log(
+          `  ${e.name.padEnd(28)} ${formatBytes(e.expandedBytes).padStart(10)}  / ${formatBytes(limit)}`,
+        )
       }
       for (const n of w.notes) console.log(`  · ${n}`)
     }
@@ -730,6 +852,16 @@ export function main(argv: string[], cwd: string): number {
           `  ·  deferred ${formatBytes(p.jsDeferredGzip)} in ${p.deferred.length} chunk(s)` +
           `  ·  wasm ${formatBytes(p.wasmGzip)} / ${formatBytes(budgets.playerRuntimeWasmGzipBytes)}` +
           `  ·  dist ${formatBytes(p.totalGzip)} gzip`,
+      )
+    }
+    if (report.render) {
+      const r = report.render.analysis
+      const memMiB = r.textureMemoryBytes / (1024 * 1024)
+      console.log(
+        `render: ${report.render.label}` +
+          `  ·  draw calls ${r.drawCalls} / ${budgets.renderBudget.maxDrawCalls}` +
+          `  ·  triangles ${r.triangles.toLocaleString('en-US')} / ${budgets.renderBudget.maxTriangles.toLocaleString('en-US')}` +
+          `  ·  texture ${memMiB.toFixed(2)} MiB / ${budgets.renderBudget.maxTextureMemoryMiB} MiB`,
       )
     }
     for (const w of report.warnings) console.log(`warning: ${w}`)

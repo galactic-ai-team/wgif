@@ -23,6 +23,7 @@
     "img2world": "tsx tools/img2world/src/cli.ts",
     "img2world:fetch-model": "tsx tools/img2world/src/fetch-model.ts",
     "size:report": "tsx scripts/size-report.ts",
+    "render:report": "tsx scripts/render-report.ts",
     "lab:compression": "tsx scripts/asset-compression-lab.ts",
     "gen:validator": "tsx scripts/gen-validator.ts",
     "typecheck:scripts": "tsc -p scripts/tsconfig.json"
