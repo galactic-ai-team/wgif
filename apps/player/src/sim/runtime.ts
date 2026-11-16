@@ -1,4 +1,4 @@
-import { BASKETBALL_SHOOTING, PAYLOAD_VERSION, emptyState, type GameState, type Interactions, type ShootingRules, type TriggerDef } from '../interactions.js';
+import { BASKETBALL_SHOOTING, PAYLOAD_VERSION, emptyState, type GameState, type Interactions, type ShootingRules, type TriggerDef, type TriggerEvent } from '../interactions.js';
 import { BallReturnAgent, type AgentBody, type AgentObject, type AgentShot, type AgentWorld, type WorldAgent } from './agents.js';
 import { GRAVITY, ballisticVelocity, newBall, stepBall, wake, type BallHooks, type BallParams, type BallState } from './ball.js';
 import { LAYER_ALL, LAYER_SOLID, newRayHit, type StaticColliders } from './colliders.js';
@@ -102,6 +102,10 @@ interface Tracked extends Grabbable {
   incomingSince: number | null;
   wasResting: boolean;
   triggers: { def: TriggerDef; trigger: CylinderTrigger }[];
+  /** `on.grab` from interactions.json. */
+  onGrab: TriggerEvent | null;
+  /** A trigger asked to put this object back; done after the physics step that raised it. */
+  resetPending: boolean;
   view: AgentObject;
 }
 
@@ -213,8 +217,10 @@ export class WorldRuntime {
         incomingSince: null,
         wasResting: false,
         triggers: triggerDefs
-          .filter((t) => t.enterFromAbove && (t.enterFromAbove.target === null || t.enterFromAbove.target === def.id))
+          .filter((t) => [t.enterFromAbove, t.enter].some((h) => h && (h.target === null || h.target === def.id)))
           .map((t) => ({ def: t, trigger: new CylinderTrigger(t.id, t.shape) })),
+        onGrab: def.onGrab ?? null,
+        resetPending: false,
         view: null as unknown as AgentObject,
       };
       item.view = this.objectView(item);
@@ -313,7 +319,7 @@ export class WorldRuntime {
     o.body.vel[0] = velocity[0]; o.body.vel[1] = velocity[1]; o.body.vel[2] = velocity[2];
     const live = !!this.shootout && this.shootout.live && this.shootout.def.ball === o.id;
     o.shot = { releasedAt: this.time, from: copy(this.player.feet), live, scoredAt: null, groundedAt: null, clean: true, done: false };
-    for (const t of o.triggers) t.trigger.reset();
+    for (const t of o.triggers) t.trigger.reset(origin);
     if (live) this.shootout?.shot();
     this.events.push({ type: 'shot', object: o.id, power: p });
     return true;
@@ -431,9 +437,27 @@ export class WorldRuntime {
       // Tip-off: the shooter starts with the ball, wherever it was.
       if (!this.held && this.playerEnabled) this.hold(ball, 'agent');
     }
+    // Tip-off faces the nearest target hoop, so a first-time player is not shooting at nothing
+    // (the court's spawn looks at centre court, with both hoops ~90° to the side).
+    if (this.playerEnabled) {
+      const eye = this.player.eye;
+      let best: Vec3 | null = null, bestD = Infinity;
+      for (const t of this.triggerTargets(this.shootout.def.targets)) {
+        const d = horizontalDistance(eye, t);
+        if (d < bestD) { bestD = d; best = t; }
+      }
+      if (best) this.player.lookAt(best);
+    }
     this.shootout.start();
     this.events.push({ type: 'shootout', signal: { kind: 'countdown', seconds: COUNTDOWN_SEC } });
     return true;
+  }
+
+  /** Centres of the named trigger objects (the minigame's hoops). */
+  private triggerTargets(ids: readonly string[]): Vec3[] {
+    const out: Vec3[] = [];
+    for (const o of this.tracked.values()) for (const { def } of o.triggers) if (ids.includes(def.id) && !out.some((c) => c === def.shape.center)) out.push(def.shape.center);
+    return out;
   }
 
   stopShootout(): void {
@@ -500,6 +524,11 @@ export class WorldRuntime {
       if (o.held || o.carrier) continue;
       this.current = o;
       stepBall(o.body, o.params, this.colliders, TICK, LAYER_ALL, this.hooks);
+      if (o.resetPending) {
+        o.resetPending = false;
+        this.resetObject(o.id);
+        continue;
+      }
       this.afterStep(o);
     }
     this.current = null;
@@ -572,13 +601,22 @@ export class WorldRuntime {
   private onMove(prev: Vec3, cur: Vec3): void {
     const o = this.current;
     if (!o) return;
-    for (const t of o.triggers) if (t.trigger.sweep(prev, cur)) this.fire(t.def, o);
+    for (const t of o.triggers) {
+      const { enterFromAbove: top, enter } = t.def;
+      if (top && (top.target === null || top.target === o.id) && t.trigger.sweep(prev, cur)) this.fire(t.def, top, o);
+      if (enter && (enter.target === null || enter.target === o.id) && t.trigger.enters(prev, cur)) this.fire(t.def, enter, o);
+    }
   }
 
-  private fire(def: TriggerDef, o: Tracked): void {
-    const event = def.enterFromAbove?.event ?? '';
-    if (event !== 'score') {
-      this.events.push({ type: 'trigger', trigger: def.id, event, object: o.id });
+  /** Runs one trigger handler for object `o` (see TriggerEvent in interactions.ts for the semantics). */
+  private fire(def: TriggerDef, handler: TriggerEvent, o: Tracked): void {
+    if (handler.event === 'activate') {
+      this.events.push({ type: 'trigger', trigger: def.id, event: 'activate', object: o.id });
+      return;
+    }
+    if (handler.event === 'reset') {
+      this.events.push({ type: 'trigger', trigger: def.id, event: 'reset', object: o.id });
+      o.resetPending = true;
       return;
     }
     const shot = o.shot;
@@ -606,6 +644,12 @@ export class WorldRuntime {
     this.power = 0;
     this.events.push({ type: 'grab', object: o.id, by });
     this.carry();
+    const h = o.onGrab;
+    if (h?.event === 'activate') this.events.push({ type: 'trigger', trigger: o.id, event: 'activate', object: h.target ?? o.id });
+    else if (h?.event === 'reset' && h.target && h.target !== o.id && this.tracked.has(h.target)) {
+      this.events.push({ type: 'trigger', trigger: o.id, event: 'reset', object: h.target });
+      this.resetObject(h.target);
+    }
   }
 
   private release(o: Tracked): void {
@@ -624,7 +668,7 @@ export class WorldRuntime {
     wake(o.body);
     o.shot = null;
     o.incomingSince = null;
-    for (const t of o.triggers) t.trigger.reset();
+    for (const t of o.triggers) t.trigger.reset(at);
   }
 
   /** Keeps the held object in the player's hands, lifting it towards the release point while charging. */

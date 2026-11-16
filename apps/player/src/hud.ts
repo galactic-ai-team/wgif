@@ -13,6 +13,7 @@ export class Hud {
   private readonly time = $('hud-time');
   private readonly score = $('hud-score');
   private readonly best = $('hud-best');
+  private readonly shots = $('hud-shots');
   private readonly bannerEl = $('banner');
   private readonly result = $('result');
   private readonly crosshair = $('crosshair');
@@ -34,6 +35,8 @@ export class Hud {
       this.text(this.time, String(seconds));
       this.text(this.score, String(game.score));
       this.text(this.best, String(game.highScore));
+      // Live makes/attempts, so a player can see every released shot is counted.
+      this.text(this.shots, `${game.makes}/${game.attempts}`);
       this.set('board-class', game.phase === 'playing' ? (game.timeLeft <= 10 ? 'live urgent' : 'live') : '', (v) => (this.scoreboard.className = v));
     }
     this.show(this.crosshair, walking && !opts.editing);

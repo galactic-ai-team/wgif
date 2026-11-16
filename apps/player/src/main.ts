@@ -269,7 +269,15 @@ async function openBytes(bytes: Uint8Array, name: string): Promise<void> {
 
 /** A world this player cannot run still shows its preview, and says what is missing. */
 function showRefused(name: string, err: WorldOpenError): void {
-  if (!err.preview || viewer?.runtime) return;
+  // Shown even when another world is already open: the refused world's own preview and what it
+  // is missing are what the visitor asked to see. The open world stays loaded underneath.
+  if (!err.preview) return;
+  const underneath = !!viewer?.runtime;
+  if (underneath) {
+    if (document.pointerLockElement) document.exitPointerLock();
+    controls.setEnabled(false);
+  }
+  $('refused-back').hidden = !underneath;
   const img = $<HTMLImageElement>('refused-preview');
   if (previewUrl) URL.revokeObjectURL(previewUrl);
   previewUrl = URL.createObjectURL(new Blob([err.preview.bytes as Uint8Array<ArrayBuffer>], { type: err.preview.mediaType }));
@@ -280,6 +288,11 @@ function showRefused(name: string, err: WorldOpenError): void {
   $('empty').hidden = true;
   $('refused').hidden = false;
 }
+
+$('refused-back').addEventListener('click', () => {
+  $('refused').hidden = true;
+  if (viewer?.runtime) controls.setEnabled(viewer.mode === 'walk');
+});
 
 async function openFile(file: File): Promise<void> {
   await openBytes(new Uint8Array(await file.arrayBuffer()), file.name);

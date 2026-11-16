@@ -24,12 +24,32 @@ export interface SpherePhysics {
   friction: number;
 }
 
+/** The built-in events a trigger can raise (interactions.v0.1 `event.event`). */
+export type TriggerEventName = 'score' | 'reset' | 'activate';
+export const TRIGGER_EVENTS: readonly TriggerEventName[] = ['score', 'reset', 'activate'];
+
+/**
+ * One `on.*` handler. How this player runs them:
+ * - `score`: a basket. Only a released shot can score, and only once per shot; it counts for the
+ *   Shootout when the trigger is one of the minigame's targets.
+ * - `reset`: the object goes back to its spawn point (the object that went in for `enter` /
+ *   `enterFromAbove`; the named `target` for `grab`).
+ * - `activate`: raised as a `trigger` runtime event for the host (sound, flash, agents).
+ */
+export interface TriggerEvent {
+  event: TriggerEventName;
+  /** `enter` / `enterFromAbove`: the object that has to go in (null = any). `grab`: the object acted on. */
+  target: string | null;
+}
+
 export interface GrabbableDef {
   kind: 'grabbable';
   id: string;
   node: string | null;
   physics: SpherePhysics;
   spawn: Vec3 | null;
+  /** `on.grab`: raised when the player or an agent picks this object up. */
+  onGrab: TriggerEvent | null;
 }
 
 export interface TriggerDef {
@@ -37,8 +57,10 @@ export interface TriggerDef {
   id: string;
   node: string | null;
   shape: { type: 'cylinder'; center: Vec3; radius: number; height: number };
-  /** `enterFromAbove`: the event to raise, and the object that has to pass through (null = any). */
-  enterFromAbove: { event: string; target: string | null } | null;
+  /** `on.enterFromAbove`: raised when an object comes in through the top face and out through the bottom. */
+  enterFromAbove: TriggerEvent | null;
+  /** `on.enter`: raised when an object's centre comes into the cylinder from any side. */
+  enter: TriggerEvent | null;
 }
 
 export type ObjectDef = GrabbableDef | TriggerDef;
@@ -66,6 +88,12 @@ export interface Interactions {
   /** Node names that are solid. Null means the file does not say, so `extras.wgif.collider` hints apply. */
   staticColliders: string[] | null;
   minigames: MinigameDef[];
+  /**
+   * Trigger features the file uses that this player cannot run (an `on.*` handler it has no
+   * semantics for). They are never silently dropped: they become warnings, and a world that lists
+   * `interaction.trigger` in `requires[]` is refused for interactive play (see world.ts).
+   */
+  unsupported: string[];
 }
 
 export interface GameState {
@@ -94,7 +122,7 @@ const vec3 = (v: unknown): Vec3 | null => (isVec3(v) && v.every((n) => Math.abs(
 const list = (v: unknown): unknown[] => (Array.isArray(v) ? v.slice(0, MAX_ITEMS) : []);
 
 export function emptyInteractions(): Interactions {
-  return { version: PAYLOAD_VERSION, camera: { spawn: null, lookAt: null, firstPersonHeight: 1.7, bounds: null }, objects: [], staticColliders: null, minigames: [] };
+  return { version: PAYLOAD_VERSION, camera: { spawn: null, lookAt: null, firstPersonHeight: 1.7, bounds: null }, objects: [], staticColliders: null, minigames: [], unsupported: [] };
 }
 
 /** Clamps minigame rules to playable ranges. Used for files and for the edit panel alike. */
@@ -110,7 +138,19 @@ export function sanitizeRules(raw: unknown, base: ShootingRules = DEFAULT_RULES)
   };
 }
 
-function parseObject(raw: unknown, warn: (m: string) => void): ObjectDef | null {
+/** Reads one `on.<key>` handler. Unknown event names are reported, never guessed at. */
+function parseHandler(on: Json | null, key: string, oid: string, unsupported: (m: string) => void): TriggerEvent | null {
+  if (!on || on[key] === undefined) return null;
+  const h = on[key];
+  const event = isJson(h) ? h.event : undefined;
+  if (!isJson(h) || typeof event !== 'string' || !(TRIGGER_EVENTS as readonly string[]).includes(event)) {
+    unsupported(`object "${oid}": on.${key} event ${JSON.stringify(isJson(h) ? h.event : h)} is not one of ${TRIGGER_EVENTS.join(', ')}`);
+    return null;
+  }
+  return { event: event as TriggerEventName, target: id(h.target) };
+}
+
+function parseObject(raw: unknown, warn: (m: string) => void, unsupported: (m: string) => void): ObjectDef | null {
   if (!isJson(raw)) return null;
   const oid = id(raw.id);
   if (!oid) {
@@ -118,7 +158,22 @@ function parseObject(raw: unknown, warn: (m: string) => void): ObjectDef | null 
     return null;
   }
   const node = str(raw.node);
+  const on = isJson(raw.on) ? raw.on : null;
+  if (on) {
+    const allowed = raw.kind === 'grabbable' ? ['grab'] : raw.kind === 'trigger' ? ['enterFromAbove', 'enter'] : [];
+    for (const key of Object.keys(on)) {
+      if (!allowed.includes(key)) unsupported(`object "${oid}": on.${key} on a ${String(raw.kind)} object has no meaning in this player`);
+    }
+  }
   if (raw.kind === 'grabbable') {
+    let onGrab = parseHandler(on, 'grab', oid, unsupported);
+    if (onGrab?.event === 'score') {
+      unsupported(`object "${oid}": on.grab "score" is not supported (only a shot through a trigger scores)`);
+      onGrab = null;
+    } else if (onGrab?.event === 'reset' && (onGrab.target === null || onGrab.target === oid)) {
+      unsupported(`object "${oid}": on.grab "reset" needs a target other than the object being picked up`);
+      onGrab = null;
+    }
     const p = isJson(raw.physics) ? raw.physics : {};
     if (p.shape !== undefined && p.shape !== 'sphere') warn(`object "${oid}": only sphere physics is supported, treating it as a sphere`);
     return {
@@ -127,23 +182,23 @@ function parseObject(raw: unknown, warn: (m: string) => void): ObjectDef | null 
       node,
       physics: { radius: num(p.radius, 0.12, 0.01, 5), restitution: num(p.restitution, 0.6, 0, 0.98), friction: num(p.friction, 0.5, 0, 1) },
       spawn: vec3(raw.spawn),
+      onGrab,
     };
   }
   if (raw.kind === 'trigger') {
     const s = isJson(raw.shape) ? raw.shape : {};
     const center = vec3(s.center);
     if (s.type !== 'cylinder' || !center) {
-      warn(`trigger "${oid}": only cylinder shapes with a center are supported, ignored`);
+      unsupported(`trigger "${oid}": only cylinder shapes with a center are supported`);
       return null;
     }
-    const on = isJson(raw.on) && isJson(raw.on.enterFromAbove) ? raw.on.enterFromAbove : null;
-    const event = on ? str(on.event) : null;
     return {
       kind: 'trigger',
       id: oid,
       node,
       shape: { type: 'cylinder', center, radius: num(s.radius, 0.25, 0.01, 1000), height: num(s.height, 0.1, 0.01, 1000) },
-      enterFromAbove: event ? { event, target: on ? id(on.target) : null } : null,
+      enterFromAbove: parseHandler(on, 'enterFromAbove', oid, unsupported),
+      enter: parseHandler(on, 'enter', oid, unsupported),
     };
   }
   // `static` and `dynamic` are valid kinds with no behaviour of their own in this player.
@@ -157,6 +212,10 @@ export function parseInteractions(raw: unknown): { interactions: Interactions; w
   const warnings: string[] = [];
   const warn = (m: string): void => {
     if (warnings.length < 20) warnings.push(`interactions: ${m}`);
+  };
+  const unsupported = (m: string): void => {
+    if (out.unsupported.length < 50) out.unsupported.push(m);
+    warn(`${m} (unsupported, ignored)`);
   };
   if (raw === null || raw === undefined) return { interactions: out, warnings };
   if (!isJson(raw)) {
@@ -178,7 +237,7 @@ export function parseInteractions(raw: unknown): { interactions: Interactions; w
 
   const seen = new Set<string>();
   for (const item of list(raw.objects)) {
-    const obj = parseObject(item, warn);
+    const obj = parseObject(item, warn, unsupported);
     if (!obj) continue;
     if (seen.has(obj.id)) {
       warn(`duplicate object id "${obj.id}", keeping the first`);
@@ -186,6 +245,10 @@ export function parseInteractions(raw: unknown): { interactions: Interactions; w
     }
     seen.add(obj.id);
     out.objects.push(obj);
+  }
+
+  if (Array.isArray(raw.interactions) && raw.interactions.length > 0) {
+    unsupported(`interactions[] (${raw.interactions.length} free-form entr${raw.interactions.length === 1 ? 'y' : 'ies'}) has no defined behaviour in v0.1`);
   }
 
   if (isJson(raw.colliders) && Array.isArray(raw.colliders.static)) {
@@ -233,6 +296,30 @@ export function parseGameState(raw: unknown): GameState {
     for (const [key, value] of Object.entries(raw.objects).slice(0, MAX_ITEMS)) {
       const position = isJson(value) ? vec3(value.position) : null;
       if (ID.test(key) && position) out.objects[key] = { position };
+    }
+  }
+  return out;
+}
+
+/**
+ * Lists the game-state.json fields that are valid v0.1 but that this player does not apply, so
+ * they are reported instead of silently ignored: the running `score` (top level and per minigame,
+ * since a Shootout always starts from 0) and an object's `rotation`, `scale` and `enabled` (the
+ * runtime only places objects). Export keeps them in the file untouched (see exporter.ts).
+ */
+export function unsupportedStateFields(raw: unknown): string[] {
+  const out: string[] = [];
+  if (!isJson(raw)) return out;
+  if (raw.score !== undefined) out.push('score');
+  if (isJson(raw.minigames)) {
+    for (const [key, value] of Object.entries(raw.minigames).slice(0, MAX_ITEMS)) {
+      if (isJson(value) && value.score !== undefined) out.push(`minigames.${key}.score`);
+    }
+  }
+  if (isJson(raw.objects)) {
+    for (const [key, value] of Object.entries(raw.objects).slice(0, MAX_ITEMS)) {
+      if (!isJson(value)) continue;
+      for (const field of ['rotation', 'scale', 'enabled']) if (value[field] !== undefined) out.push(`objects.${key}.${field}`);
     }
   }
   return out;
