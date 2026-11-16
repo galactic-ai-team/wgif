@@ -72,6 +72,7 @@ export function isPrecompressed(path: string): boolean {
 }
 export function isSafePath(path: string): boolean {
   if (!path || path.length > 512 || path.startsWith('/') || path.includes('\\')) return false;
+  // eslint-disable-next-line no-control-regex -- intentional: reject control chars in archive paths
   if (/[\x00-\x1f\x7f]/.test(path) || /^[A-Za-z]:/.test(path)) return false;
   return !path.split('/').some((seg) => seg === '..' || seg === '.' || seg === '' || seg === '__proto__');
 }
