@@ -23,13 +23,13 @@ export interface Rc1Spawn {
 }
 
 /**
- * Strict RC1 provenance schema: only `parent`, `generator`, and `history` are permitted
- * (`additionalProperties: false`). Seed, origin, and parameters are encoded in `generator`
- * and `history` so zero extra properties appear on `provenance`.
+ * Strict v0.1 RC1 provenance schema (`additionalProperties: false`):
+ * only `parent`, `generator`, `params`, and `history` are permitted.
  */
 export interface Rc1Provenance {
   parent?: string;
   generator: string;
+  params?: Record<string, unknown>;
   history?: string[];
 }
 
@@ -41,7 +41,7 @@ export interface Rc1Manifest {
   creator: Rc1Creator;
   created: string;
   license?: string;
-  mode: 'locked' | 'editable';
+  mode: 'locked' | 'editable' | 'layered';
   entry: {
     scene: string;
     preview: string;
@@ -218,7 +218,11 @@ export function buildReproducibleCourtArtifacts(): CourtBundleArtifacts {
       },
     ],
     provenance: {
-      generator: `@wgif/court-builder@0.1.0 (origin=procedural;seed=${seed})`,
+      generator: '@wgif/court-builder@0.1.0',
+      params: {
+        origin: 'procedural',
+        seed,
+      },
     },
   };
 
