@@ -166,6 +166,178 @@ export function ring(cx: number, y: number, cz: number, rIn: number, rOut: numbe
   return m;
 }
 
+/** Moves a mesh in place: optional turn about +Z, then about +Y (radians), then a shift. */
+export function place(m: Mesh, o: { rotZ?: number; rotY?: number; at?: V3 }): Mesh {
+  const cz = Math.cos(o.rotZ ?? 0), sz = Math.sin(o.rotZ ?? 0), cy = Math.cos(o.rotY ?? 0), sy = Math.sin(o.rotY ?? 0);
+  const [tx, ty, tz] = o.at ?? [0, 0, 0];
+  const turn = (a: number[], i: number, shift: boolean): void => {
+    let x = a[i]!, y = a[i + 1]!;
+    const z0 = a[i + 2]!;
+    [x, y] = [x * cz - y * sz, x * sz + y * cz];
+    const z = -x * sy + z0 * cy;
+    x = x * cy + z0 * sy;
+    a[i] = x + (shift ? tx : 0); a[i + 1] = y + (shift ? ty : 0); a[i + 2] = z + (shift ? tz : 0);
+  };
+  for (let i = 0; i < m.positions.length; i += 3) {
+    turn(m.positions, i, true);
+    turn(m.normals, i, false);
+  }
+  return m;
+}
+
+/** Smooth vertex normals from the triangles (counter-clockwise faces point out). */
+function smoothNormals(m: Mesh): void {
+  const n = new Array<number>(m.positions.length).fill(0), p = m.positions;
+  for (let i = 0; i < m.indices.length; i += 3) {
+    const a = m.indices[i]! * 3, b = m.indices[i + 1]! * 3, c = m.indices[i + 2]! * 3;
+    const ux = p[b]! - p[a]!, uy = p[b + 1]! - p[a + 1]!, uz = p[b + 2]! - p[a + 2]!;
+    const vx = p[c]! - p[a]!, vy = p[c + 1]! - p[a + 1]!, vz = p[c + 2]! - p[a + 2]!;
+    const fx = uy * vz - uz * vy, fy = uz * vx - ux * vz, fz = ux * vy - uy * vx;
+    for (const k of [a, b, c]) {
+      n[k] = n[k]! + fx;
+      n[k + 1] = n[k + 1]! + fy;
+      n[k + 2] = n[k + 2]! + fz;
+    }
+  }
+  for (let i = 0; i < n.length; i += 3) {
+    const l = Math.hypot(n[i]!, n[i + 1]!, n[i + 2]!) || 1;
+    n[i] = n[i]! / l;
+    n[i + 1] = n[i + 1]! / l;
+    n[i + 2] = n[i + 2]! / l;
+  }
+  m.normals = n;
+}
+
+/** One cross-section of a loft: at `z`, from `yb` up to `yt`, `hw` either side of x = 0. */
+export interface Station {
+  z: number;
+  yb: number;
+  yt: number;
+  hw: number;
+}
+
+/**
+ * A smooth body lofted through rounded-rectangle sections along Z (a car body, a canopy).
+ * `round` is the superellipse exponent: 2 is an ellipse, higher is boxier. The ends are capped.
+ */
+export function loft(stations: Station[], round = 4, seg = 28): Mesh {
+  const m = empty();
+  const e = 2 / round;
+  const sgn = (v: number): number => (v < 0 ? -1 : 1);
+  for (const [k, s] of stations.entries()) {
+    const cy = (s.yb + s.yt) / 2, hh = (s.yt - s.yb) / 2;
+    for (let i = 0; i < seg; i++) {
+      const a = (i / seg) * Math.PI * 2, c = Math.cos(a), sn = Math.sin(a);
+      m.positions.push(s.hw * sgn(c) * Math.abs(c) ** e, cy + hh * sgn(sn) * Math.abs(sn) ** e, s.z);
+      m.uvs.push(i / seg, k / (stations.length - 1));
+    }
+  }
+  // Seen from +Z the ring runs counter-clockwise, so (ring k, ring k+1 further along +Z) faces outward this way:
+  for (let k = 0; k + 1 < stations.length; k++) {
+    for (let i = 0; i < seg; i++) {
+      const a = k * seg + i, b = k * seg + ((i + 1) % seg), c = a + seg, d = b + seg;
+      if (stations[k + 1]!.z > stations[k]!.z) m.indices.push(a, b, d, a, d, c);
+      else m.indices.push(a, d, b, a, c, d);
+    }
+  }
+  const cap = (k: number, towardPlus: boolean): void => {
+    const s = stations[k]!, centre = m.positions.length / 3;
+    m.positions.push(0, (s.yb + s.yt) / 2, s.z);
+    m.uvs.push(0.5, 0.5);
+    for (let i = 0; i < seg; i++) {
+      const a = k * seg + i, b = k * seg + ((i + 1) % seg);
+      if (towardPlus) m.indices.push(centre, a, b);
+      else m.indices.push(centre, b, a);
+    }
+  };
+  const forward = stations[stations.length - 1]!.z > stations[0]!.z;
+  cap(0, !forward);
+  cap(stations.length - 1, forward);
+  smoothNormals(m);
+  // Make sure the faces point out (the winding above depends on the ring direction).
+  let out = 0;
+  const mid = stations[Math.floor(stations.length / 2)]!, my = (mid.yb + mid.yt) / 2;
+  for (let i = 0; i < stations.length * seg * 3; i += 3) out += m.normals[i]! * m.positions[i]! + m.normals[i + 1]! * (m.positions[i + 1]! - my);
+  if (out < 0) {
+    for (let i = 0; i < m.indices.length; i += 3) [m.indices[i + 1], m.indices[i + 2]] = [m.indices[i + 2]!, m.indices[i + 1]!];
+    smoothNormals(m);
+  }
+  return m;
+}
+
+/**
+ * A solid with a constant cross-section `profile` (convex, [z, y] points counter-clockwise seen from
+ * +X) from x0 to x1: ramps and wedges. Flat-shaded.
+ */
+export function extrudeX(profile: [number, number][], x0: number, x1: number): Mesh {
+  const m = empty();
+  const n = profile.length;
+  const face = (verts: V3[], normal: V3): void => {
+    const b = m.positions.length / 3;
+    for (const v of verts) {
+      m.positions.push(...v);
+      m.normals.push(...normal);
+      m.uvs.push(v[2], v[1]);
+    }
+    for (let i = 1; i + 1 < verts.length; i++) m.indices.push(b, b + i, b + i + 1);
+  };
+  // +X side: (z, y) counter-clockwise seen from +X means (-z) is "right"... build with explicit normals.
+  face(profile.map(([z, y]) => [x1, y, z] as V3).reverse(), [1, 0, 0]);
+  face(profile.map(([z, y]) => [x0, y, z] as V3), [-1, 0, 0]);
+  for (let i = 0; i < n; i++) {
+    const [z0, y0] = profile[i]!, [z1, y1] = profile[(i + 1) % n]!;
+    const dz = z1 - z0, dy = y1 - y0, l = Math.hypot(dz, dy) || 1;
+    // Outward normal of an edge of a counter-clockwise (seen from +X) polygon in the (z, y) plane.
+    const nz = -dy / l, ny = dz / l;
+    face([[x0, y0, z0], [x0, y1, z1], [x1, y1, z1], [x1, y0, z0]], [0, ny, nz]);
+  }
+  return fixWinding(m);
+}
+
+/** Flips each triangle whose winding disagrees with its normals, so faces point the way they are lit. */
+function fixWinding(m: Mesh): Mesh {
+  const p = m.positions, nr = m.normals;
+  for (let i = 0; i < m.indices.length; i += 3) {
+    const a = m.indices[i]!, b = m.indices[i + 1]!, c = m.indices[i + 2]!;
+    const ux = p[b * 3]! - p[a * 3]!, uy = p[b * 3 + 1]! - p[a * 3 + 1]!, uz = p[b * 3 + 2]! - p[a * 3 + 2]!;
+    const vx = p[c * 3]! - p[a * 3]!, vy = p[c * 3 + 1]! - p[a * 3 + 1]!, vz = p[c * 3 + 2]! - p[a * 3 + 2]!;
+    const fx = uy * vz - uz * vy, fy = uz * vx - ux * vz, fz = ux * vy - uy * vx;
+    if (fx * nr[a * 3]! + fy * nr[a * 3 + 1]! + fz * nr[a * 3 + 2]! < 0) {
+      m.indices[i + 1] = c;
+      m.indices[i + 2] = b;
+    }
+  }
+  return m;
+}
+
+/** A cone (or a frustum when `top` > 0) standing on y0. */
+export function cone(cx: number, cz: number, y0: number, y1: number, r: number, top = 0, seg = 16): Mesh {
+  const m = empty();
+  const slope = (r - top) / (y1 - y0);
+  for (let i = 0; i <= seg; i++) {
+    const a = (i / seg) * Math.PI * 2, x = Math.cos(a), z = Math.sin(a), l = Math.hypot(1, slope);
+    m.positions.push(cx + r * x, y0, cz + r * z, cx + top * x, y1, cz + top * z);
+    m.normals.push(x / l, slope / l, z / l, x / l, slope / l, z / l);
+    m.uvs.push(i / seg, 1, i / seg, 0);
+  }
+  for (let i = 0; i < seg; i++) {
+    const a = i * 2;
+    m.indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+  }
+  const c = m.positions.length / 3;
+  m.positions.push(cx, y0, cz);
+  m.normals.push(0, -1, 0);
+  m.uvs.push(0.5, 0.5);
+  for (let i = 0; i <= seg; i++) {
+    const a = (i / seg) * Math.PI * 2;
+    m.positions.push(cx + r * Math.cos(a), y0, cz + r * Math.sin(a));
+    m.normals.push(0, -1, 0);
+    m.uvs.push(0.5, 0.5);
+  }
+  for (let i = 0; i < seg; i++) m.indices.push(c, c + i + 1, c + i + 2);
+  return fixWinding(m);
+}
+
 export interface MatOptions {
   rough?: number;
   metal?: number;
@@ -202,7 +374,16 @@ export class GlbBuilder {
     return m;
   }
 
-  add(name: string, data: Mesh, material: Material, extras?: Record<string, unknown>): Node {
+  /** An empty node (a group), under `parent` or at the scene root. */
+  node(name: string, parent?: Node, at?: V3): Node {
+    const node = this.doc.createNode(name);
+    if (at) node.setTranslation(at);
+    if (parent) parent.addChild(node);
+    else this.scene.addChild(node);
+    return node;
+  }
+
+  add(name: string, data: Mesh, material: Material, extras?: Record<string, unknown>, parent?: Node): Node {
     const count = data.positions.length / 3;
     const pos = this.doc.createAccessor().setType('VEC3').setArray(new Float32Array(data.positions)).setBuffer(this.buffer);
     const nrm = this.doc.createAccessor().setType('VEC3').setArray(new Float32Array(data.normals)).setBuffer(this.buffer);
@@ -214,7 +395,8 @@ export class GlbBuilder {
     }
     const node = this.doc.createNode(name).setMesh(this.doc.createMesh(name).addPrimitive(prim));
     if (extras) node.setExtras(extras);
-    this.scene.addChild(node);
+    if (parent) parent.addChild(node);
+    else this.scene.addChild(node);
     return node;
   }
 

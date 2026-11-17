@@ -18,7 +18,7 @@ const sample = (name: string): Uint8Array =>
   new Uint8Array(readFileSync(fileURLToPath(new URL(`../../../examples/worlds/${name}.wgif`, import.meta.url))));
 
 describe('sample worlds open and run in the player', () => {
-  it.each(['gallery', 'rooftop', 'city'])('%s opens with no warnings and settles', async (name) => {
+  it.each(['gallery', 'rooftop', 'city', 'car'])('%s opens with no warnings and settles', async (name) => {
     const w = await open(sample(name));
     expect(w.doc.warnings).toEqual([]);
     expect(w.built.warnings).toEqual([]);

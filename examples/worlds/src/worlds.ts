@@ -1,3 +1,4 @@
+import { buildCarWgif } from './car.js';
 import { CITY, CITY_XL, buildCityWgif } from './city.js';
 import { buildGalleryWgif } from './gallery.js';
 import { buildRooftopWgif } from './rooftop.js';
@@ -7,6 +8,7 @@ export const WORLDS: Record<string, () => Promise<Uint8Array>> = {
   gallery: buildGalleryWgif,
   rooftop: buildRooftopWgif,
   city: () => buildCityWgif(CITY),
+  car: buildCarWgif,
 };
 
 /** Device-test builds that are never committed (over the Phase One world budget on purpose). */

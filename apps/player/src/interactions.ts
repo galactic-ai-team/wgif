@@ -81,6 +81,23 @@ export interface MinigameDef {
   rules: ShootingRules;
 }
 
+/**
+ * A drivable vehicle: an `interactions[]` entry with `"type": "vehicle"` (the v0.1 schema leaves
+ * that array free-form; see docs/notes/vehicle-component.md for the proposed shape).
+ */
+export interface VehicleDef {
+  id: string;
+  /** The scene node that moves with the vehicle (its origin is the ground point under the body). */
+  node: string;
+  spawn: Vec3 | null;
+  yaw: number;
+  drive: { maxSpeed: number; reverseSpeed: number; accel: number; brake: number; maxSteer: number; wheelBase: number };
+  body: { radius: number; length: number };
+  /** Child nodes drawn as wheels: all spin, front ones also steer. */
+  wheels: { front: string[]; rear: string[]; radius: number };
+  camera: { distance: number; height: number };
+}
+
 export interface Interactions {
   version: string;
   camera: CameraRules;
@@ -88,6 +105,7 @@ export interface Interactions {
   /** Node names that are solid. Null means the file does not say, so `extras.wgif.collider` hints apply. */
   staticColliders: string[] | null;
   minigames: MinigameDef[];
+  vehicles: VehicleDef[];
   /**
    * Trigger features the file uses that this player cannot run (an `on.*` handler it has no
    * semantics for). They are never silently dropped: they become warnings, and a world that lists
@@ -122,7 +140,7 @@ const vec3 = (v: unknown): Vec3 | null => (isVec3(v) && v.every((n) => Math.abs(
 const list = (v: unknown): unknown[] => (Array.isArray(v) ? v.slice(0, MAX_ITEMS) : []);
 
 export function emptyInteractions(): Interactions {
-  return { version: PAYLOAD_VERSION, camera: { spawn: null, lookAt: null, firstPersonHeight: 1.7, bounds: null }, objects: [], staticColliders: null, minigames: [], unsupported: [] };
+  return { version: PAYLOAD_VERSION, camera: { spawn: null, lookAt: null, firstPersonHeight: 1.7, bounds: null }, objects: [], staticColliders: null, minigames: [], vehicles: [], unsupported: [] };
 }
 
 /** Clamps minigame rules to playable ranges. Used for files and for the edit panel alike. */
@@ -206,6 +224,34 @@ function parseObject(raw: unknown, warn: (m: string) => void, unsupported: (m: s
   return null;
 }
 
+const names = (v: unknown): string[] => list(v).map(str).filter((n): n is string => n !== null).slice(0, 16);
+
+function parseVehicle(raw: Json, warn: (m: string) => void): VehicleDef | null {
+  const vid = id(raw.id), node = str(raw.node);
+  if (!vid || !node) {
+    warn('a vehicle needs an id and a node, ignored');
+    return null;
+  }
+  const d = isJson(raw.drive) ? raw.drive : {}, b = isJson(raw.body) ? raw.body : {}, w = isJson(raw.wheels) ? raw.wheels : {}, c = isJson(raw.camera) ? raw.camera : {};
+  return {
+    id: vid,
+    node,
+    spawn: vec3(raw.spawn),
+    yaw: num(raw.yaw, 0, -100, 100),
+    drive: {
+      maxSpeed: num(d.maxSpeed, 16, 0.5, 80),
+      reverseSpeed: num(d.reverseSpeed, 5, 0, 40),
+      accel: num(d.accel, 7, 0.1, 60),
+      brake: num(d.brake, 16, 0.1, 100),
+      maxSteer: num(d.maxSteer, 0.55, 0.05, 1.2),
+      wheelBase: num(d.wheelBase, 2.6, 0.3, 20),
+    },
+    body: { radius: num(b.radius, 0.85, 0.1, 10), length: num(b.length, 4.2, 0.2, 40) },
+    wheels: { front: names(w.front), rear: names(w.rear), radius: num(w.radius, 0.34, 0.05, 5) },
+    camera: { distance: num(c.distance, 6.5, 1, 60), height: num(c.height, 2.4, 0.2, 30) },
+  };
+}
+
 /** Reads interactions.json. Pass the parsed JSON (or null/undefined when the world has none). */
 export function parseInteractions(raw: unknown): { interactions: Interactions; warnings: string[] } {
   const out = emptyInteractions();
@@ -247,9 +293,15 @@ export function parseInteractions(raw: unknown): { interactions: Interactions; w
     out.objects.push(obj);
   }
 
-  if (Array.isArray(raw.interactions) && raw.interactions.length > 0) {
-    unsupported(`interactions[] (${raw.interactions.length} free-form entr${raw.interactions.length === 1 ? 'y' : 'ies'}) has no defined behaviour in v0.1`);
+  let freeForm = 0;
+  for (const item of list(raw.interactions)) {
+    if (isJson(item) && item.type === 'vehicle') {
+      const v = parseVehicle(item, warn);
+      if (v && (seen.has(v.id) || out.vehicles.some((o) => o.id === v.id))) warn(`duplicate id "${v.id}" for a vehicle, ignored`);
+      else if (v) out.vehicles.push(v);
+    } else freeForm++;
   }
+  if (freeForm > 0) unsupported(`interactions[] (${freeForm} free-form entr${freeForm === 1 ? 'y' : 'ies'}) has no defined behaviour in v0.1`);
 
   if (isJson(raw.colliders) && Array.isArray(raw.colliders.static)) {
     out.staticColliders = [...new Set(list(raw.colliders.static).map(str).filter((s): s is string => s !== null))];

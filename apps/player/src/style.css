@@ -41,6 +41,16 @@ main { flex: 1; display: flex; min-height: 0; }
 #stick { position: absolute; width: 112px; height: 112px; margin: -56px 0 0 -56px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.35); background: rgba(255, 255, 255, 0.08); pointer-events: none; }
 #knob { position: absolute; left: 50%; top: 50%; width: 48px; height: 48px; margin: -24px 0 0 -24px; border-radius: 50%; background: rgba(255, 255, 255, 0.55); }
 .touch-btn { position: absolute; right: max(18px, env(safe-area-inset-right)); bottom: max(26px, env(safe-area-inset-bottom)); width: 88px; height: 88px; border-radius: 50%; border: 2px solid #ef8a4a; background: rgba(194, 87, 26, 0.75); color: #fff; font: inherit; font-weight: 700; touch-action: none; z-index: 2; }
+/* Drive pad (touch only): steer under the left thumb, pedals under the right. Buttons are held. */
+#drive-pad { position: absolute; inset: auto 0 0 0; height: 0; z-index: 2; pointer-events: none; }
+body:not(.touch) #drive-pad { display: none; }
+#drive-pad > div { position: absolute; bottom: max(22px, env(safe-area-inset-bottom)); display: flex; gap: 12px; pointer-events: auto; }
+#drive-pad .pad-steer { left: max(16px, env(safe-area-inset-left)); }
+#drive-pad .pad-pedals { right: max(16px, env(safe-area-inset-right)); align-items: flex-end; }
+#drive-pad button { width: 76px; height: 76px; border-radius: 18px; border: 2px solid #8ea0ff; background: rgba(30, 37, 80, 0.72); color: #fff; font: inherit; font-size: 26px; font-weight: 700; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+#drive-pad [data-drive='brake'] { font-size: 15px; height: 64px; border-color: #ff8080; background: rgba(110, 30, 40, 0.72); }
+#drive-pad [data-drive='gas'] { font-size: 17px; height: 104px; border-color: #7dff9a; background: rgba(26, 100, 52, 0.75); }
+#drive-pad button.down { filter: brightness(1.5); transform: scale(0.96); }
 .touch-btn:active { background: rgba(239, 138, 74, 0.9); }
 .touch-btn.small { width: 48px; height: 48px; right: max(118px, calc(env(safe-area-inset-right) + 100px)); border-color: #8ea0ff; background: rgba(30, 37, 80, 0.8); font-size: 20px; }
 
