@@ -71,10 +71,20 @@ sw.addEventListener('activate', (event) => {
 const SHARE_CACHE = 'wgif-shared-file';
 const SHARE_KEY = './__shared.wgif';
 const SHARE_PATH = new URL('./share-target', sw.location.href).pathname;
+// Cap on a shared file: the same size a ?src= fetch is allowed (opening.ts MAX_REMOTE_BYTES).
+// The worker is dependency-free (see the file header), so the constant is duplicated, not
+// imported. The multipart wrapper around the file adds a few KB; SHARE_HEADROOM covers it so a
+// legitimately max-size world is not refused at the door.
+const SHARE_MAX_BYTES = 64 * 1024 * 1024;
+const SHARE_HEADROOM = 64 * 1024;
 
 async function receiveShare(request: Request): Promise<Response> {
   const back = (query: string): Response => Response.redirect(new URL(`./?${query}`, sw.location.href).href, 303);
   try {
+    // Refuse a too-large share before reading the body: formData() buffers the whole upload in the
+    // worker's memory, and the player would refuse a world over MAX_REMOTE_BYTES anyway.
+    const declared = Number(request.headers.get('content-length') ?? 0);
+    if (declared > SHARE_MAX_BYTES + SHARE_HEADROOM) return back('shared=none');
     const form = await request.formData();
     const file = form.getAll('world').find((v): v is File => typeof v !== 'string');
     if (!file) return back('shared=none');
