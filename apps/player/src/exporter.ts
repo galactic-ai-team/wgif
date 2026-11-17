@@ -105,7 +105,7 @@ export async function exportWorld(doc: WorldDocument, opts: ExportOptions = {}):
   }
 
   const note = tidy(opts.note, 300) || tidy(summary, 300);
-  const bytes = await exportEditedWorld({ manifest, files }, { at, ...(by ? { by } : {}), ...(note ? { note } : {}) });
+  const bytes = await exportEditedWorld({ manifest, files, originalManifest: before }, { at, ...(by ? { by } : {}), ...(note ? { note } : {}) });
 
   // Never hand out a file this player would refuse to open.
   const check = await unpackWgif(bytes);

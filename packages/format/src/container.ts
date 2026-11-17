@@ -108,17 +108,21 @@ export async function unpackWgif(bytes: Uint8Array, limits: Limits = DEFAULT_LIM
 }
 
 export async function exportEditedWorld(
-  world: Pick<WgifWorld, 'manifest' | 'files'>,
+  world: Pick<WgifWorld, 'manifest' | 'files'> & {
+    /** Unmodified source manifest for signed edits that already changed manifest fields (such as spawn). */
+    originalManifest?: WgifManifest;
+  },
   edit: { by?: string; note?: string; at?: Date } = {},
   opts: PackOptions = {},
 ): Promise<Uint8Array> {
-  const before = world.manifest;
-  if (before.mode === 'locked') throw new WgifReadError('mode.locked', 'compliant players do not export edited locked worlds');
+  const before = world.originalManifest ?? world.manifest;
+  const edited = world.manifest;
+  if (before.mode === 'locked' || edited.mode === 'locked') throw new WgifReadError('mode.locked', 'compliant players do not export edited locked worlds');
   const at = (edit.at ?? new Date()).toISOString().replace(/\.\d{3}Z$/, 'Z');
   const next: WgifManifest = {
-    ...before, modified: at, files: await buildFileEntries(before, world.files),
-    provenance: { ...before.provenance,
-      history: [...(before.provenance?.history ?? []),
+    ...edited, modified: at, files: await buildFileEntries(edited, world.files),
+    provenance: { ...edited.provenance,
+      history: [...(edited.provenance?.history ?? []),
         { action: 'edit', at, ...(edit.by ? { by: edit.by } : {}), ...(edit.note ? { note: edit.note } : {}) }] },
   };
   if (before.signature) {
@@ -127,6 +131,8 @@ export async function exportEditedWorld(
     if (!stillValid) {
       delete next.signature;
       next.provenance = { ...next.provenance, parent: { id: before.id, signingHash: await signingHash(before) } };
+    } else {
+      next.signature = before.signature;
     }
   }
   // Export is a portability boundary: an edit must not produce an archive that
