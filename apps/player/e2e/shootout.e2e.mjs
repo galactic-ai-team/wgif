@@ -6,7 +6,7 @@
  *   node apps/player/e2e/shootout.e2e.mjs <url> [--chrome /usr/bin/google-chrome] [--rounds 1] [--seconds 60]
  *
  * <url> is a deployed preview or a local `vite preview` (http://localhost:4173/). WebGL runs on
- * SwiftShader. It plays like a person who does not watch the power bar: "Load sample court",
+ * SwiftShader. It plays like a person who does not watch the power bar: opens `?src=samples/court.wgif`,
  * "▶ Shootout", then, whenever the ball is in hand, a 300–1200 ms hold and release; it never
  * presses E or R. Profiles (--profile a,b): mouse (pointer lock, which headless Chrome grants),
  * mouse-nolock (requestPointerLock refused: plain press-and-hold), space, and touch (390x844 phone,
@@ -49,12 +49,12 @@ async function play(profile) {
   page.on('pageerror', (e) => errors.push(String(e)));
   const url = new URL(base);
   url.searchParams.set('e2e', '1');
+  url.searchParams.set('src', 'samples/court.wgif');
   await page.goto(url.href, { waitUntil: 'load' });
   // Second load so the service worker controls the page (its fetch handler is what logged Response.clone errors).
   await sleep(1500);
   await page.reload({ waitUntil: 'load' });
   const tap = async (sel) => (phone ? page.tap(sel) : page.click(sel));
-  await tap('#sample');
   await page.waitForSelector('#play:not([hidden])', { timeout: 60000 });
   // Header must not be clipped: every visible header control fully inside the viewport.
   const clipped = await page.evaluate(() => [...document.querySelectorAll('header .btn, header .brand')]

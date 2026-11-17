@@ -674,16 +674,6 @@ fileInput.addEventListener('change', () => {
   fileInput.value = '';
 });
 
-$('sample').addEventListener('click', async () => {
-  try {
-    const res = await fetch(new URL('samples/court.wgif', document.baseURI));
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    await openBytes(new Uint8Array(await res.arrayBuffer()), 'court.wgif');
-  } catch (e) {
-    showError(`Sample not available: ${(e as Error).message}. Run "npm run pack:court" first.`);
-  }
-});
-
 modeBtn.addEventListener('click', () => setMode(viewer?.mode === 'orbit' ? 'walk' : 'orbit'));
 playBtn.addEventListener('click', () => {
   const rt = viewer?.runtime;

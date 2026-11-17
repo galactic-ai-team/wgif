@@ -108,6 +108,23 @@ describe('opening from the iOS Files picker', () => {
   });
 });
 
+describe('landing page', () => {
+  it('shows a clean Open .wgif landing, with no sample-court button and no auto-loaded world', () => {
+    const html = read('index.html');
+    expect(html).toMatch(/<label class="btn" for="file">Open \.wgif/);
+    expect(html).toContain('Drop a .wgif file here');
+    expect(html).toContain('or use “Open .wgif”. Everything runs locally in your browser.');
+    expect(html).not.toContain('id="sample"');
+    expect(html).not.toContain('Load sample court');
+    const main = read('src/main.ts');
+    expect(main).not.toContain("$('sample')");
+    // A world opens only from a file, a drop, a share, the installed-app handler, or ?src=.
+    expect(main).toContain('readSrcParam(location.search, location.href)');
+    expect(main).toContain('void openRemote(src.url)');
+    expect(main).toContain("params.get('shared') === '1'");
+  });
+});
+
 describe('?src= links to a hosted .wgif', () => {
   const base = 'https://wgif-player.example/app/?x=1';
   it('accepts https and same-origin links, resolving relative ones', () => {

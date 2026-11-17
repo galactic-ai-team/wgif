@@ -31,7 +31,7 @@ npm run pack:court      # builds examples/court/court.wgif and copies it into th
 npm run dev             # opens the player at http://localhost:5173
 ```
 
-In the player, click **Load sample court**, use **Open .wgif**, or drag a `.wgif` onto the page.
+In the player, use **Open .wgif** or drag a `.wgif` onto the page. A link with `?src=samples/court.wgif` (or another shipped sample) still opens that world.
 **Mode** switches between orbit (drag, scroll, right-drag) and first-person walk (click to look, WASD to move,
 Shift to run, Esc to release).
 
