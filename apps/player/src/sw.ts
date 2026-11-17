@@ -65,8 +65,45 @@ sw.addEventListener('activate', (event) => {
   );
 });
 
+// Web Share Target (manifest share_target, Android): a .wgif shared to the installed app arrives
+// as a POST to ./share-target. Park it in its own cache and hand the page ./?shared=1, which
+// opens it (src/main.ts). These names match SHARE_CACHE / SHARE_KEY in src/opening.ts.
+const SHARE_CACHE = 'wgif-shared-file';
+const SHARE_KEY = './__shared.wgif';
+const SHARE_PATH = new URL('./share-target', sw.location.href).pathname;
+// Cap on a shared file: the same size a ?src= fetch is allowed (opening.ts MAX_REMOTE_BYTES).
+// The worker is dependency-free (see the file header), so the constant is duplicated, not
+// imported. The multipart wrapper around the file adds a few KB; SHARE_HEADROOM covers it so a
+// legitimately max-size world is not refused at the door.
+const SHARE_MAX_BYTES = 64 * 1024 * 1024;
+const SHARE_HEADROOM = 64 * 1024;
+
+async function receiveShare(request: Request): Promise<Response> {
+  const back = (query: string): Response => Response.redirect(new URL(`./?${query}`, sw.location.href).href, 303);
+  try {
+    // Refuse a too-large share before reading the body: formData() buffers the whole upload in the
+    // worker's memory, and the player would refuse a world over MAX_REMOTE_BYTES anyway.
+    const declared = Number(request.headers.get('content-length') ?? 0);
+    if (declared > SHARE_MAX_BYTES + SHARE_HEADROOM) return back('shared=none');
+    const form = await request.formData();
+    const file = form.getAll('world').find((v): v is File => typeof v !== 'string');
+    if (!file) return back('shared=none');
+    const cache = await caches.open(SHARE_CACHE);
+    await cache.put(new URL(SHARE_KEY, sw.location.href).href, new Response(file, {
+      headers: { 'Content-Type': 'application/vnd.wgif+zip', 'X-WGIF-Name': encodeURIComponent(file.name || 'shared.wgif') },
+    }));
+    return back('shared=1');
+  } catch {
+    return back('shared=none');
+  }
+}
+
 sw.addEventListener('fetch', (event) => {
   const { request } = event;
+  if (request.method === 'POST' && new URL(request.url).pathname === SHARE_PATH) {
+    event.respondWith(receiveShare(request));
+    return;
+  }
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
   // Only same-origin requests are ever served from cache; anything else

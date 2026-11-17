@@ -75,6 +75,8 @@ export class WorldViewer {
   private dynamics: Dynamic[] = [];
   private flashes: Flash[] = [];
   private overview = { position: new THREE.Vector3(0, 4.7, 14), target: new THREE.Vector3(0, 1, 0) };
+  /** What the overview frames (side it is seen from, width across), so a snapshot can frame it for its own shape. */
+  private framing = { side: new THREE.Vector3(0, 0, 1), width: 10 };
   private eyeY = 0;
   private renderFrames = 2;
   private shadowsDirty = true;
@@ -149,6 +151,50 @@ export class WorldViewer {
     this.renderer.setAnimationLoop(() => this.frame());
   }
 
+  /**
+   * Draws the open world from its overview (the framing "Reset view" uses) at width x height into
+   * a new 2D canvas, for the preview image of an export. Aim arc and edit markers are left out.
+   * The main view is put back and redrawn in the same task, so nothing flickers on screen.
+   */
+  snapshot(width: number, height: number): HTMLCanvasElement | null {
+    if (!this.world) return null;
+    // Framed like the landscape overview (70° vertical field, whole world across), whatever shape the screen is.
+    const aspect = width / height;
+    const camera = new THREE.PerspectiveCamera(70, aspect, this.camera.near, this.camera.far);
+    const reach = Math.max(2, (this.framing.width / 2 / (Math.tan(THREE.MathUtils.degToRad(35)) * Math.min(Math.max(aspect, 0.4), 1.6))) * 1.05);
+    const tilt = THREE.MathUtils.degToRad(30);
+    camera.position.copy(this.overview.target).addScaledVector(this.framing.side, Math.cos(tilt) * reach).add(new THREE.Vector3(0, Math.sin(tilt) * reach, 0));
+    camera.lookAt(this.overview.target);
+    camera.updateProjectionMatrix();
+    const shown = { markers: this.markers.visible, arc: this.arc.visible };
+    const ratio = this.renderer.getPixelRatio();
+    const size = this.renderer.getSize(new THREE.Vector2());
+    const out = document.createElement('canvas');
+    out.width = width;
+    out.height = height;
+    try {
+      this.markers.visible = false;
+      this.arc.visible = false;
+      this.renderer.setPixelRatio(1);
+      this.renderer.setSize(width, height, false);
+      this.renderer.shadowMap.needsUpdate = true;
+      this.renderer.render(this.scene, camera);
+      // Copied before the frame is presented, so no preserveDrawingBuffer is needed.
+      const ctx = out.getContext('2d');
+      if (!ctx) return null;
+      ctx.drawImage(this.renderer.domElement, 0, 0, width, height);
+    } finally {
+      this.markers.visible = shown.markers;
+      this.arc.visible = shown.arc;
+      this.renderer.setPixelRatio(ratio);
+      this.renderer.setSize(size.x, size.y, false);
+      this.renderer.shadowMap.needsUpdate = true;
+      this.renderer.render(this.scene, this.camera);
+      this.invalidate(true);
+    }
+    return out;
+  }
+
   /** Loads a world's scene and starts its simulation from the given state. */
   async load(doc: WorldDocument, state: GameState): Promise<{ runtime: WorldRuntime; built: SceneColliders }> {
     const bytes = doc.world.files[doc.world.manifest.entry.scene];
@@ -199,6 +245,7 @@ export class WorldViewer {
     if (side.lengthSq() < 1e-6) side.set(0, 0, 1);
     side.normalize();
     const width = Math.abs(side.x) * size.z + Math.abs(side.z) * size.x;
+    this.framing = { side: side.clone(), width };
     const aspect = Math.max(0.4, this.host.clientWidth / Math.max(1, this.host.clientHeight));
     const reach = Math.max(2, (width / 2 / (Math.tan(THREE.MathUtils.degToRad(35)) * Math.min(aspect, 1.6))) * 1.05);
     const tilt = THREE.MathUtils.degToRad(30);

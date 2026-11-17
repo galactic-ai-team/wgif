@@ -16,7 +16,7 @@
     <header>
       <div class="brand">🌌 <strong>WGIF Player</strong> <span class="muted">v0.1 proof</span></div>
       <div class="actions">
-        <label class="btn" for="file">Open .wgif<input id="file" type="file" accept=".wgif,application/vnd.wgif+zip,application/zip" hidden /></label>
+        <label class="btn" for="file">Open .wgif<input id="file" type="file" hidden /></label>
         <button class="btn" id="sample" type="button">Load sample court</button>
         <button class="btn" id="mode" type="button" disabled>Mode: Orbit</button>
         <button class="btn primary" id="play" type="button" hidden>▶ Shootout</button>
@@ -96,8 +96,11 @@
           <div id="export-box">
             <label class="field">Your name <input id="by" type="text" maxlength="80" autocomplete="name" placeholder="for the history" /></label>
             <button class="btn" id="export" type="button">Export .wgif</button>
+            <button class="btn" id="share-wgif" type="button" hidden>Share / Save to Files…</button>
             <button class="btn" id="reopen" type="button" hidden>Open the exported copy</button>
           </div>
+          <button class="btn" id="save-image" type="button">Save preview image</button>
+          <p id="open-note" class="small muted" hidden></p>
           <button class="btn" id="forget" type="button">Reset progress</button>
         </section>
         <section id="layers-box" hidden>

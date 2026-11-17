@@ -2,9 +2,12 @@ import { createRebounder, reboundSpot, type RebounderAgent } from './ai.js';
 import { Sfx } from './audio.js';
 import { PlayerControls } from './controls.js';
 import { EditSession, isLayerOp } from './edit.js';
-import { exportWorld, type ExportResult } from './exporter.js';
+import { exportWorld, slug, type ExportResult } from './exporter.js';
 import { Hud } from './hud.js';
 import { mergeState, sanitizeRules, type GameState } from './interactions.js';
+import {
+  MAX_REMOTE_BYTES, SHARE_CACHE, SHARE_KEY, WGIF_MEDIA_TYPE, imageNameFor, isAppleMobile, isAndroid, nameFromUrl, notAWorld, pickerAccept, previewFits, readSrcParam,
+} from './opening.js';
 import { WorldSaver, draftFits, openStateStore } from './save.js';
 import { BallReturnAgent } from './sim/agents.js';
 import type { RuntimeEvent, WorldRuntime } from './sim/runtime.js';
@@ -40,6 +43,13 @@ interface Session {
   warnings: string[];
   lastExport: ExportResult | null;
 }
+
+// iOS greys out a .wgif in the Files picker whenever `accept` is set (it has no file type for it),
+// so phones get an unfiltered picker and the player checks what was picked.
+const accept = pickerAccept(navigator);
+if (accept) fileInput.accept = accept;
+else fileInput.removeAttribute('accept');
+const appleMobile = isAppleMobile(navigator);
 
 // Offline PWA (Phase One item 6): register the hand-written service worker
 // in production builds only, so `vite dev` never caches dev assets. The
@@ -169,6 +179,12 @@ function renderInfo(): void {
       ? 'Scores are saved on this device. Export adds your edits as a new layer; the original stays as it is.'
       : 'Scores and where the ball lies are saved on this device. Export writes them, and your edits, into a new file.';
   $<HTMLButtonElement>('reopen').hidden = !session.lastExport;
+  $<HTMLButtonElement>('share-wgif').hidden = !session.lastExport || !canShareFile(exportFile(session.lastExport));
+  const note = $('open-note');
+  note.hidden = !appleMobile && !isAndroid(navigator);
+  note.textContent = appleMobile
+    ? 'On iPhone the export lands in Files › Downloads. To play it again, tap “Open .wgif” here and pick it. Tapping a .wgif in the Files app cannot start the player: iOS does not let a website open its own file types.'
+    : 'To play an exported .wgif again, tap “Open .wgif” and pick it, or share it to the installed WGIF app.';
 
   $('layers-box').hidden = doc.layers.length === 0;
   $('layers').replaceChildren(
@@ -237,6 +253,11 @@ async function mount(view: WorldDocument, state: GameState, keepPose = false): P
 }
 
 async function openBytes(bytes: Uint8Array, name: string): Promise<void> {
+  const bad = notAWorld(bytes, name);
+  if (bad) {
+    showError(bad);
+    return;
+  }
   try {
     const world = await openWorld(bytes);
     const doc = await loadDocument(world);
@@ -512,16 +533,31 @@ $('export').addEventListener('click', async () => {
     }
     const state = session.doc.policy.via === 'base' ? rt.snapshot() : null;
     const ops = session.doc.policy.via === 'layer' ? session.edits.ops.filter(isLayerOp) : session.edits.ops;
-    const result = await exportWorld(session.doc, { ops, state, by });
-    const url = URL.createObjectURL(new Blob([result.bytes as Uint8Array<ArrayBuffer>], { type: 'application/vnd.wgif+zip' }));
-    Object.assign(document.createElement('a'), { href: url, download: result.fileName }).click();
-    setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    const result = await exportWorld(session.doc, { ops, state, by, preview: session.doc.policy.via === 'base' ? renderPreview() : null });
+    download(result.bytes, result.fileName, WGIF_MEDIA_TYPE);
     session.lastExport = result;
-    $<HTMLButtonElement>('reopen').hidden = false;
-    notify(`Exported ${result.fileName} (${formatBytes(result.bytes.byteLength)}). ${result.kind === 'layer' ? 'Your changes are a new layer; the original world inside is untouched.' : 'It carries your changes and the history of this edit.'}`);
+    renderInfo();
+    const shown = result.preview === 'refreshed' ? ' Its preview image shows your edit.' : '';
+    notify(`Exported ${result.fileName} (${formatBytes(result.bytes.byteLength)}). ${result.kind === 'layer' ? 'Your changes are a new layer; the original world inside is untouched.' : 'It carries your changes and the history of this edit.'}${shown}`);
   } catch (e) {
     showError((e as Error).message);
   }
+});
+
+$('share-wgif').addEventListener('click', () => {
+  const last = session?.lastExport;
+  if (last) void shareOrDownload(exportFile(last), last.bytes, WGIF_MEDIA_TYPE);
+});
+
+$('save-image').addEventListener('click', () => {
+  if (!session) return;
+  const png = snapshotPng(1024, 614);
+  if (!png) {
+    showError('Could not draw a picture of this world.');
+    return;
+  }
+  const name = imageNameFor(session.lastExport?.fileName ?? `${slug(session.doc.world.manifest.title)}.wgif`);
+  void shareOrDownload(new File([png as Uint8Array<ArrayBuffer>], name, { type: 'image/png' }), png, 'image/png');
 });
 
 $('reopen').addEventListener('click', () => {
@@ -539,6 +575,96 @@ $('forget').addEventListener('click', async () => {
   renderGame();
   notify('Progress for this world was reset.');
 });
+
+// ---- files in and out ----------------------------------------------------------------------------
+
+function download(bytes: Uint8Array, fileName: string, type: string): void {
+  const url = URL.createObjectURL(new Blob([bytes as Uint8Array<ArrayBuffer>], { type }));
+  Object.assign(document.createElement('a'), { href: url, download: fileName }).click();
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
+}
+
+const exportFile = (r: ExportResult): File => new File([r.bytes as Uint8Array<ArrayBuffer>], r.fileName, { type: WGIF_MEDIA_TYPE });
+
+function canShareFile(file: File): boolean {
+  try {
+    return typeof navigator.canShare === 'function' && navigator.canShare({ files: [file] });
+  } catch {
+    return false;
+  }
+}
+
+/** The share sheet (iPhone: Save to Files / Save Image / AirDrop) when the browser has one for this file; otherwise a download. */
+async function shareOrDownload(file: File, bytes: Uint8Array, type: string): Promise<void> {
+  if (canShareFile(file)) {
+    try {
+      // Called straight from the click (no await before it), so the browser still sees the tap.
+      await navigator.share({ files: [file], title: file.name });
+      return;
+    } catch (e) {
+      if ((e as Error).name === 'AbortError') return;
+    }
+  }
+  download(bytes, file.name, type);
+}
+
+/** The open world drawn from its overview, as PNG bytes. Synchronous, so a share can follow inside the tap. */
+function snapshotPng(width: number, height: number): Uint8Array | null {
+  const canvas = viewer?.snapshot(width, height);
+  if (!canvas) return null;
+  const url = canvas.toDataURL('image/png');
+  const comma = url.indexOf(',');
+  if (!url.startsWith('data:image/png') || comma < 0) return null;
+  const bin = atob(url.slice(comma + 1));
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+/** A preview for an export: the biggest of a few sizes that keeps the SPEC §4 limits (≤ 512 px, ≤ 256 KiB). */
+function renderPreview(): Uint8Array | null {
+  for (const [w, h] of [[480, 288], [400, 240], [320, 192]] as const) {
+    const png = snapshotPng(w, h);
+    if (!png) return null;
+    if (previewFits(png)) return png;
+  }
+  return null;
+}
+
+/** `?src=<https url>`: open a hosted .wgif, so a plain link can open a world in the player. */
+async function openRemote(url: URL): Promise<void> {
+  const name = nameFromUrl(url);
+  try {
+    const res = await fetch(url, { credentials: 'omit' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const length = Number(res.headers.get('content-length') ?? 0);
+    if (length > MAX_REMOTE_BYTES) throw new Error(`it is ${formatBytes(length)}, more than the ${formatBytes(MAX_REMOTE_BYTES)} this player fetches`);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (bytes.byteLength > MAX_REMOTE_BYTES) throw new Error(`it is more than the ${formatBytes(MAX_REMOTE_BYTES)} this player fetches`);
+    await openBytes(bytes, name);
+  } catch (e) {
+    showError(`Could not fetch ${name}: ${(e as Error).message}. The host must allow downloads from other sites (CORS).`);
+  }
+}
+
+/** A .wgif shared to the installed app (Android share sheet) was parked by the service worker. */
+async function openShared(): Promise<void> {
+  try {
+    const cache = await caches.open(SHARE_CACHE);
+    const key = new URL(SHARE_KEY, document.baseURI).href;
+    const hit = await cache.match(key);
+    if (!hit) {
+      showError('The shared file did not arrive. Try “Open .wgif” instead.');
+      return;
+    }
+    const name = decodeURIComponent(hit.headers.get('X-WGIF-Name') ?? 'shared.wgif');
+    const bytes = new Uint8Array(await hit.arrayBuffer());
+    await cache.delete(key); // the player's own hand-off copy, not the person's file
+    await openBytes(bytes, name);
+  } catch (e) {
+    showError(`Could not open the shared file: ${(e as Error).message}`);
+  }
+}
 
 // ---- wiring -----------------------------------------------------------------------------------
 
@@ -619,6 +745,23 @@ try {
   byInput.value = localStorage.getItem('wgif.author') ?? '';
 } catch {
   // private mode
+}
+
+// A .wgif opened with the installed app (desktop Chrome/Edge "Open with", via manifest file_handlers).
+interface LaunchParams { files?: { getFile(): Promise<File> }[] }
+const launchQueue = (window as unknown as { launchQueue?: { setConsumer(consumer: (params: LaunchParams) => void): void } }).launchQueue;
+launchQueue?.setConsumer((params) => {
+  const handle = params.files?.[0];
+  if (handle) void handle.getFile().then(openFile, (e: unknown) => showError(`Could not read the file: ${(e as Error).message}`));
+});
+
+{
+  const params = new URLSearchParams(location.search);
+  const src = readSrcParam(location.search, location.href);
+  if (src && 'error' in src) showError(src.error);
+  else if (src) void openRemote(src.url);
+  else if (params.get('shared') === '1' && 'caches' in window) void openShared();
+  else if (params.get('shared') === 'none') showError('Nothing that looks like a .wgif was shared. Try “Open .wgif” instead.');
 }
 
 // Hooks for automated smoke tests.
