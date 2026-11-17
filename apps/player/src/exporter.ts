@@ -1,6 +1,7 @@
 import { exportEditedWorld, unpackWgif, utf8, type WgifFiles, type WgifManifest } from '@wgif/format';
 import { applyEdits, compactOps, describeOp, isLayerOp, toLayer, type EditOp } from './edit.js';
 import { PAYLOAD_VERSION, isJson, readJson, type GameState, type Json } from './interactions.js';
+import { previewFits } from './opening.js';
 import type { WorldDocument } from './world.js';
 
 export class WorldExportError extends Error {
@@ -19,6 +20,13 @@ export interface ExportOptions {
   by?: string;
   note?: string;
   at?: Date;
+  /**
+   * A fresh PNG of the edited world (rendered by the viewer) to replace `entry.preview`, so the
+   * exported file's preview shows the edit. Used only when the base is rewritten anyway (editable
+   * mode), the preview path is a .png, and the image keeps the SPEC §4 limits. A layered export
+   * never touches base files, preview included, so the base signature survives.
+   */
+  preview?: Uint8Array | null;
 }
 
 export interface ExportResult {
@@ -28,7 +36,12 @@ export interface ExportResult {
   /** `edit`: base files were rewritten. `layer`: a layer was added and the base is untouched. */
   kind: 'edit' | 'layer';
   layerId?: string;
+  /** `refreshed`: entry.preview is the new render. Otherwise why the original preview was kept. */
+  preview: 'refreshed' | 'none-given' | 'layered' | 'signed-unchanged' | 'not-png' | 'too-big';
 }
+
+const sameBytes = (a: Uint8Array | undefined, b: Uint8Array | undefined): boolean =>
+  !!a && !!b && a.byteLength === b.byteLength && a.every((v, i) => v === b[i]);
 
 const json = (value: unknown): Uint8Array => utf8(JSON.stringify(value, null, 2) + '\n');
 const tidy = (s: string | undefined, max: number): string => (s ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
@@ -104,11 +117,29 @@ export async function exportWorld(doc: WorldDocument, opts: ExportOptions = {}):
     }
   }
 
+  let preview: ExportResult['preview'] = 'none-given';
+  if (opts.preview) {
+    const previewPath = before.entry.preview;
+    // Changing any signed base file drops the signature (exportEditedWorld). Only let the preview
+    // be that change when something else in the base already changed.
+    const baseChanged = manifest.spawn !== before.spawn ||
+      Object.keys(files).some((p) => p !== previewPath && !sameBytes(files[p], doc.world.files[p]));
+    if (kind === 'layer') preview = 'layered';
+    else if (!/\.png$/i.test(previewPath)) preview = 'not-png';
+    else if (!previewFits(opts.preview)) preview = 'too-big';
+    else if (before.signature && !baseChanged) preview = 'signed-unchanged';
+    else {
+      files[previewPath] = opts.preview;
+      preview = 'refreshed';
+      summary = summary ? `${summary}; new preview image` : 'new preview image';
+    }
+  }
+
   const note = tidy(opts.note, 300) || tidy(summary, 300);
   const bytes = await exportEditedWorld({ manifest, files }, { at, ...(by ? { by } : {}), ...(note ? { note } : {}) });
 
   // Never hand out a file this player would refuse to open.
   const check = await unpackWgif(bytes);
   if (!check.report.ok) throw new WorldExportError('invalid', `The exported file failed validation: ${check.report.errors.map((e) => e.message).join('; ')}`);
-  return { bytes, fileName: `${slug(before.title)}-${layerId ?? 'edit'}.wgif`, manifest: check.manifest, kind, ...(layerId ? { layerId } : {}) };
+  return { bytes, fileName: `${slug(before.title)}-${layerId ?? 'edit'}.wgif`, manifest: check.manifest, kind, preview, ...(layerId ? { layerId } : {}) };
 }
