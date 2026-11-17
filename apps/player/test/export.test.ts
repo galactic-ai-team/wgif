@@ -80,6 +80,21 @@ describe('export: editable world', () => {
     expect(describeTrust(out).label).toBe('unsigned');
   });
 
+  it('records the original signed parent for a spawn-only edit', async () => {
+    const { doc } = await open(await courtVariant({ sign: true }));
+    expect(doc.world.report.signature).toBe('valid');
+    const originalHash = doc.signingHash;
+    const spawn = { position: [2, 1.7, 7] as [number, number, number], lookAt: [0, 1.2, 0] as [number, number, number] };
+    const result = await exportWorld(doc, { ops: [{ op: 'spawn', ...spawn }], at: AT });
+    const reopened = await openWorld(Uint8Array.from(result.bytes));
+    expect(reopened.report.ok).toBe(true);
+    expect(reopened.report.signature).toBe('absent');
+    expect(reopened.manifest.signature).toBeUndefined();
+    expect(reopened.manifest.spawn).toEqual(spawn);
+    expect(reopened.manifest.provenance?.parent)
+      .toEqual({ id: doc.world.manifest.id, signingHash: originalHash });
+  });
+
   it('can export an exported copy again, and the history grows', async () => {
     const first = await exportWorld((await open()).doc, { ops: [{ op: 'move', id: 'ball', position: [1, 0.12, 1] }], by: 'a', at: AT });
     const second = await exportWorld((await open(first.bytes)).doc, { ops: [{ op: 'move', id: 'ball', position: [2, 0.12, 2] }], by: 'b', at: AT });
