@@ -17,14 +17,14 @@ import { ofType, open } from './helpers.js';
 const HOME: Vec3 = [12.425, 3.05, 0];
 const FREE_THROW_EYE: Vec3 = [8.2, 1.7, 0];
 
-/** The court as main.ts mounts it: rebounder NPC plus the 7 s ball-return safety net. */
+/** The court as main.ts mounts it: rebounder NPC plus the ball-return safety net (2 s patience, 4 s deadline). */
 async function mounted() {
   const opened = await open();
   const npc = await createRebounder(opened.doc.world);
   const rt = opened.runtime;
   if (npc) {
     rt.setAgent(npc);
-    if (rt.shootout) rt.setAgent(new BallReturnAgent(7));
+    if (rt.shootout) rt.setAgent(new BallReturnAgent(2, 4));
   }
   const input: PlayerInput = { forward: 0, right: 0, run: false, charging: false };
   const events: RuntimeEvent[] = [];
@@ -122,10 +122,12 @@ describe('play test 2026-11-16: rebounder NPC', () => {
     const m = await mounted();
     expect(m.npc?.info).toMatchObject({ runtime: 'rules', usedFallback: false, tickHz: 10 });
     expect(m.rt.bodies.map((b) => b.role)).toEqual(['rebounder']);
+    // The NPC on its own: only the old 7 s safety net, no 4 s deadline.
+    m.rt.setAgent(new BallReturnAgent(7));
     m.rt.startShootout();
     await m.frames(3.1);
     m.rt.player.spawn(FREE_THROW_EYE, HOME);
-    await holdAndRelease(m, 0.2); // a short, weak miss
+    await holdAndRelease(m, 0.25); // a short, weak miss
     const before = m.events.length;
     for (let t = 0; t < 15 * 60 && !m.rt.held; t++) await m.frame();
     expect(m.rt.held).toBe('ball');

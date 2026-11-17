@@ -16,8 +16,18 @@ import { Walker, type Bounds } from './walker.js';
  */
 export const TICK = 1 / 120;
 const MAX_TICKS_PER_FRAME = 12;
-/** Seconds of holding the shoot button to go from no power to full power (then it swings back down). */
-export const CHARGE_SEC = 1.6;
+/**
+ * Seconds of holding the shoot button to go from no power to full power (then it swings back down).
+ * 2 s puts a free throw's sweet spot at a ~0.7 s hold, the middle of what people naturally hold.
+ */
+export const CHARGE_SEC = 2;
+/**
+ * A release sooner than this after the press is a tap, not a shot: the charge is dropped and the
+ * ball stays in hand. The click that captures the mouse (or a stray tap) never throws the ball away.
+ */
+export const MIN_HOLD_SEC = 0.12;
+/** At tip-off the shooter stands this far (horizontally) in front of the rim they face: the free-throw line. */
+export const FREE_THROW_DISTANCE = 4.2;
 export const MIN_SHOT_SPEED = 3;
 export const MAX_SHOT_SPEED = 14.5;
 /**
@@ -30,13 +40,17 @@ const MAX_LAUNCH_ELEVATION = (85 * Math.PI) / 180;
  * Aim assist. When a shot is already nearly right (heading within `angle` of a rim and speed within
  * `speed` of what a make needs), `strength` of the remaining error is taken out. Close shots still
  * rattle or miss; hopeless ones are untouched. Pass `assist: false` to the runtime for raw physics.
+ *
+ * The window is wide on purpose (play test 2026-11-16: people hold for 0.3–1.2 s without watching
+ * the bar, and the old ±4 % window made a free throw a ~100 ms target). The power bar shows the lock,
+ * so "let go while it glows" is the skill; a release outside the window flies exactly as thrown.
  */
 export interface AimAssist {
   speed: number;
   angle: number;
   strength: number;
 }
-export const DEFAULT_ASSIST: AimAssist = { speed: 0.1, angle: (5 * Math.PI) / 180, strength: 0.85 };
+export const DEFAULT_ASSIST: AimAssist = { speed: 0.3, angle: (8 * Math.PI) / 180, strength: 0.95 };
 /** A shot has to come down at least this steeply (tangent of the angle) to fit through a rim. */
 const MIN_DESCENT = 0.75;
 const GRAB_REACH = 1.8;
@@ -52,6 +66,8 @@ export interface PlayerInput {
   run: boolean;
   /** The shoot button is down. Press to start charging, release to shoot. */
   charging: boolean;
+  /** The press turned into something else (a drag to look around): drop the charge without shooting. */
+  cancel?: boolean;
 }
 
 export const IDLE_INPUT: Readonly<PlayerInput> = Object.freeze({ forward: 0, right: 0, run: false, charging: false });
@@ -166,6 +182,8 @@ export class WorldRuntime {
   alpha = 1;
   /** Set by aimArc(): aim assist would correct a shot released now. */
   aimLocked = false;
+  /** The hoop the last tip-off faced (centre of its rim trigger), or null. */
+  shootoutTarget: Vec3 | null = null;
   /** Bodies of the agents that have one, for the viewer to draw. */
   bodies: readonly { role: string; body: AgentBody }[] = [];
 
@@ -437,8 +455,10 @@ export class WorldRuntime {
       // Tip-off: the shooter starts with the ball, wherever it was.
       if (!this.held && this.playerEnabled) this.hold(ball, 'agent');
     }
-    // Tip-off faces the nearest target hoop, so a first-time player is not shooting at nothing
-    // (the court's spawn looks at centre court, with both hoops ~90° to the side).
+    // Tip-off: the shooter steps up to the free-throw line of the nearest target hoop and faces it,
+    // so a first-time player is not shooting at nothing (the court's spawn looks at centre court,
+    // with both hoops ~90° to the side and ~15.6 m away). The world file and its spawn are unchanged.
+    this.shootoutTarget = null;
     if (this.playerEnabled) {
       const eye = this.player.eye;
       let best: Vec3 | null = null, bestD = Infinity;
@@ -446,11 +466,32 @@ export class WorldRuntime {
         const d = horizontalDistance(eye, t);
         if (d < bestD) { bestD = d; best = t; }
       }
-      if (best) this.player.lookAt(best);
+      if (best) {
+        this.shootoutTarget = copy(best);
+        const line = this.freeThrowSpot(best);
+        if (line) this.player.spawn(line, best);
+        else this.player.lookAt(best);
+      }
     }
     this.shootout.start();
     this.events.push({ type: 'shootout', signal: { kind: 'countdown', seconds: COUNTDOWN_SEC } });
     return true;
+  }
+
+  /**
+   * Eye position on the free-throw line of `rim`: FREE_THROW_DISTANCE from it towards the middle of
+   * the play area (or towards the spawn), at the spawn's eye height. Null if that is outside the bounds.
+   */
+  freeThrowSpot(rim: Vec3): Vec3 | null {
+    const b = this.bounds;
+    const mid: Vec3 = b ? [(b.min[0] + b.max[0]) / 2, 0, (b.min[2] + b.max[2]) / 2] : this.spawnPoint.position;
+    let dx = mid[0] - rim[0], dz = mid[2] - rim[2];
+    const len = Math.hypot(dx, dz);
+    if (len < 1e-6) return null;
+    dx /= len; dz /= len;
+    const spot: Vec3 = [rim[0] + dx * FREE_THROW_DISTANCE, this.spawnPoint.position[1], rim[2] + dz * FREE_THROW_DISTANCE];
+    if (b && (spot[0] < b.min[0] || spot[0] > b.max[0] || spot[2] < b.min[2] || spot[2] > b.max[2])) return null;
+    return spot;
   }
 
   /** Centres of the named trigger objects (the minigame's hoops). */
@@ -498,8 +539,12 @@ export class WorldRuntime {
 
   private tickWorld(input: PlayerInput): void {
     const held = this.held ? this.tracked.get(this.held) : undefined;
-    const pressed = input.charging && this.playerEnabled;
+    const pressed = input.charging && !input.cancel && this.playerEnabled;
     if (held && this.shootout?.phase !== 'countdown') {
+      if (input.cancel && this.charging) {
+        this.charging = false;
+        this.power = 0;
+      }
       if (pressed && !this.prevCharging) {
         this.charging = true;
         this.chargeTime = 0;
@@ -509,6 +554,10 @@ export class WorldRuntime {
           this.chargeTime += TICK;
           const phase = (this.chargeTime / CHARGE_SEC) % 2;
           this.power = phase <= 1 ? phase : 2 - phase;
+        } else if (this.chargeTime < MIN_HOLD_SEC) {
+          // A tap: no shot, the ball stays in hand.
+          this.charging = false;
+          this.power = 0;
         } else {
           this.shoot(this.power);
         }
@@ -761,6 +810,13 @@ export class WorldRuntime {
       giveToPlayer: (id) => {
         const o = usable(id);
         if (!o || this.held || !this.playerEnabled) return false;
+        this.hold(o, 'agent');
+        return true;
+      },
+      returnToPlayer: (id) => {
+        const o = tracked.get(id);
+        if (!o || o.held || this.held || !this.playerEnabled) return false;
+        o.carrier = null;
         this.hold(o, 'agent');
         return true;
       },

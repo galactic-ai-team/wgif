@@ -455,15 +455,15 @@ describe('aim assist', () => {
     runtime.shoot(near);
     expect(ofType(run(runtime, 2.5), 'score')).toHaveLength(1);
 
-    // 15 % too hard: not close, so it flies exactly as thrown.
+    // 40 % too hard: outside the (deliberately wide, ±30 %) window, so it flies exactly as thrown.
     pickUp(runtime);
-    const far = (raw(aim(runtime, FREE_THROW, HOME)) * 1.15 - MIN_SHOT_SPEED) / (MAX_SHOT_SPEED - MIN_SHOT_SPEED);
+    const far = (raw(aim(runtime, FREE_THROW, HOME)) * 1.4 - MIN_SHOT_SPEED) / (MAX_SHOT_SPEED - MIN_SHOT_SPEED);
     expect(runtime.plannedShot(far).locked).toBe(false);
     expect(runtime.plannedShot(far).velocity).toEqual(runtime.launchVelocity(far));
-    // Good power but aimed 6° wide: also untouched.
-    runtime.player.look(0.105, 0);
+    // Good power but aimed 10° wide (the window is 8°): also untouched.
+    runtime.player.look(0.175, 0);
     expect(runtime.plannedShot(aim(runtime, FREE_THROW, HOME)).locked).toBe(true);
-    runtime.player.look(0.105, 0);
+    runtime.player.look(0.175, 0);
     expect(runtime.plannedShot(exact).locked).toBe(false);
   });
 
