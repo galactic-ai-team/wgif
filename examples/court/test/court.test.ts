@@ -100,6 +100,29 @@ describe('example court', () => {
       expect(Math.abs(ndcX)).toBeLessThanOrEqual(0.85);
       expect(Math.abs(ndcY)).toBeLessThanOrEqual(0.85);
     }
+
+    // Target rim projects strictly inside [-0.8, 0.8] NDC for both 390x844 portrait and 1280x800 landscape
+    for (const [w, h] of [
+      [390, 844],
+      [1280, 800],
+    ] as const) {
+      const vpAspect = w / h;
+      // Per-aspect vertical FOV, mirroring the player's resize() in apps/player/src/viewer.ts
+      // (70 deg landscape; portrait holds the 70 deg horizontal FOV, capped at 100 deg vertical).
+      const vpVfovDeg = vpAspect >= 1 ? 70 : Math.min(100, (2 * Math.atan(Math.tan((35 * Math.PI) / 180) / vpAspect) * 180) / Math.PI);
+      const vpTanHalfVfov = Math.tan((vpVfovDeg * Math.PI) / 360);
+      const dx = hoop[0] - pos[0], dy = hoop[1] - pos[1], dz = hoop[2] - pos[2];
+      const cz = dx * fwd[0] + dy * fwd[1] + dz * fwd[2];
+      expect(cz).toBeGreaterThan(0.5);
+      const cx = dx * right[0] + dy * right[1] + dz * right[2];
+      const cy = dx * up[0] + dy * up[1] + dz * up[2];
+      const rimNdcX = cx / (cz * vpTanHalfVfov * vpAspect);
+      const rimNdcY = cy / (cz * vpTanHalfVfov);
+      expect(rimNdcX).toBeGreaterThanOrEqual(-0.8);
+      expect(rimNdcX).toBeLessThanOrEqual(0.8);
+      expect(rimNdcY).toBeGreaterThanOrEqual(-0.8);
+      expect(rimNdcY).toBeLessThanOrEqual(0.8);
+    }
   });
 
   it('committed court.wgif matches the generator', async () => {
