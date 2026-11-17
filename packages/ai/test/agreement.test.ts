@@ -287,17 +287,21 @@ describe('rules twin vs JS MLP on the seeded shot grid', () => {
         `velocity ${pct(counts.velocity)}, passBall ${pct(counts.pass)}, ` +
         `holdingBall ${pct(counts.holding)}, mapped state ${pct(counts.state)}`,
     );
-    // Measured on dev 3f5e6ea, Nov 16 2026: composite 88.5%, velocity 88.5%,
-    // passBall 100%, holdingBall 90.0%, mapped state 90.0%. The floors sit a
-    // few points under the measurement. The gap is not noise: all 20
-    // B-loose-near inputs disagree, because on dev the JS MLP derives
-    // holdingBall only from the observation (heldBy === 'rebounder') and so
-    // can never initiate a pickup — the rules twin holds the ball and stands
-    // still while the MLP keeps chasing it. That is the bug fixed in the
-    // ONNX-live branch (PR #25); when it lands, this rate should rise and
-    // the floors can be raised with it.
-    expect(counts.composite / GRID_SIZE).toBeGreaterThanOrEqual(0.85);
-    expect(counts.state / GRID_SIZE).toBeGreaterThanOrEqual(0.87);
+    // Measured on dev 4e94e48, Nov 16 2026 (PR #29 landed the ONNX-live
+    // pickup fix): composite 88.5%, velocity 88.5%, passBall 100%,
+    // holdingBall 100%, mapped state 100%. The floors sit a few points under
+    // the measurement. holdingBall and mapped state went to 100% because the
+    // JS MLP now asserts holdingBall on a loose ball within pickup range —
+    // the fix works. The composite is still gated by velocity on the 20
+    // B-loose-near inputs: the rules model stands still on the pickup tick
+    // (velocity 0) while the stateless ONNX clone outputs the network's
+    // toward-ball velocity. That is a limitation of the stateless clone, not
+    // a missing fix — the same observation maps to chase-velocity on one tick
+    // and pickup-stand-still on the next, depending on hidden state. Zeroing
+    // the evaluator's velocity when it asserts a pickup would close it, but
+    // that is a behaviour change to the live game, not a floor change.
+    expect(counts.composite / GRID_SIZE).toBeGreaterThanOrEqual(0.86);
+    expect(counts.state / GRID_SIZE).toBeGreaterThanOrEqual(0.97);
     expect(counts.pass / GRID_SIZE).toBeGreaterThanOrEqual(0.98);
   });
 
