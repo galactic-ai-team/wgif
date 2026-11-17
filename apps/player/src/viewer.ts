@@ -6,6 +6,7 @@ import { parseGlb } from './glb.js';
 import type { GameState } from './interactions.js';
 import { QualityGovernor } from './quality.js';
 import { mergeStatic, type MergeStats } from './merge.js';
+import { isSky, sceneBounds } from './sky.js';
 import { createRuntime, findNodes, nodeName, type SceneColliders } from './sceneBridge.js';
 import type { AgentBody } from './sim/agents.js';
 import { LAYER_SOLID, newRayHit } from './sim/colliders.js';
@@ -216,15 +217,17 @@ export class WorldViewer {
       const mesh = o as THREE.Mesh;
       if (!mesh.isMesh) return;
       const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-      mesh.castShadow = !materials.some((m) => m.transparent);
-      mesh.receiveShadow = true;
+      const sky = isSky(mesh);
+      mesh.castShadow = !sky && !materials.some((m) => m.transparent);
+      mesh.receiveShadow = !sky;
     });
     for (const object of made.runtime.objects.values()) this.bind(object, group);
     // PERF.md fix #1: what never moves becomes a few draw calls. Objects and the props that light up keep their own nodes.
     const keep = new Set<string>([...doc.interactions.objects.map((o) => o.node ?? o.id), ...made.built.props]);
-    this.merged = mergeStatic(group, (o) => keep.has(nodeName(o)));
+    // A world's own sky (extras.wgif.role "sky") stays out of the overview framing and the shadow box.
+    const box = sceneBounds(group);
+    this.merged = mergeStatic(group, (o) => keep.has(nodeName(o)) || isSky(o));
 
-    const box = new THREE.Box3().setFromObject(group);
     if (box.isEmpty()) box.set(new THREE.Vector3(-1, -1, -1), new THREE.Vector3(1, 1, 1));
     const center = box.getCenter(new THREE.Vector3());
     const radius = Math.max(1, box.getSize(new THREE.Vector3()).length() / 2);

@@ -1,0 +1,18 @@
+{
+  "name": "@wgif/example-worlds",
+  "version": "0.1.0",
+  "private": true,
+  "description": "More sample worlds for testing the player: a public-domain art gallery, a rooftop night court under a CC0 360\u00b0 panorama, and a signed, layered stress city.",
+  "type": "module",
+  "scripts": {
+    "pack": "tsx src/cli.ts",
+    "build": "tsx src/cli.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@gltf-transform/core": "^4.5.1",
+    "@wgif/format": "*",
+    "fflate": "^0.8.3"
+  }
+}

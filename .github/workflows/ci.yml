@@ -48,8 +48,8 @@ jobs:
       - name: Release freeze gate (release only)
         if: ${{ startsWith(github.ref, 'refs/tags/v0.1.0') || (github.event_name == 'workflow_dispatch' && inputs.release_check) }}
         run: npm run freeze:check --workspace @wgif/format
-      - name: Sample world is reproducible and committed
-        run: git diff --exit-code -- examples/court/court.wgif
+      - name: Sample worlds are reproducible and committed
+        run: git diff --exit-code -- examples/court/court.wgif examples/worlds/*.wgif
       - name: Size summary
         run: |
           {
