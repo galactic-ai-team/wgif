@@ -57,6 +57,12 @@
 
         <div id="stick" hidden><div id="knob"></div></div>
         <button id="action" class="touch-btn" type="button" hidden>Grab</button>
+        <button id="music-tap" type="button" hidden><span>▶ Tap to play</span><small></small></button>
+        <div id="music-bar" class="panel" hidden>
+          <button type="button" id="music-toggle" class="btn" aria-label="Play the music" aria-pressed="false">▶</button>
+          <span id="music-title"></span>
+          <input id="music-volume" type="range" min="0" max="100" value="80" aria-label="Music volume" />
+        </div>
         <div id="drive-pad" hidden>
           <div class="pad-steer">
             <button type="button" data-drive="left" aria-label="Steer left">◀</button>

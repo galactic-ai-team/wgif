@@ -280,6 +280,7 @@ describe("checkBudgets", () => {
         jsInitialGzip: 2048,
         jsDeferredGzip: 0,
         wasmGzip: 0,
+        worldsBytes: 0,
         totalGzip: 2048,
         manifestFound: true,
       },
@@ -302,6 +303,7 @@ describe("checkBudgets", () => {
         jsInitialGzip: 0,
         jsDeferredGzip: 900,
         wasmGzip: 0,
+        worldsBytes: 0,
         totalGzip: 900,
         manifestFound: true,
       },
@@ -322,6 +324,7 @@ describe("checkBudgets", () => {
         jsInitialGzip: 0,
         jsDeferredGzip: 0,
         wasmGzip: 5000,
+        worldsBytes: 0,
         totalGzip: 0,
         manifestFound: true,
       },
@@ -558,6 +561,19 @@ describe("measurePlayer", () => {
     ]);
     expect(p!.deferred.map((f) => f.rel)).toEqual(["assets/lazy-xyz.js"]);
     expect(p!.jsInitialGzip + p!.jsDeferredGzip).toBe(p!.jsGzip);
+  });
+
+  it("keeps bundled sample worlds out of the player dist total", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "wgif-dist-samples-"));
+    mkdirSync(path.join(dir, "assets"), { recursive: true });
+    mkdirSync(path.join(dir, "samples"), { recursive: true });
+    writeFileSync(path.join(dir, "assets", "index-abc.js"), "const a=1;".repeat(100));
+    const before = measurePlayer(dir)!;
+    writeFileSync(path.join(dir, "samples", "big.wgif"), new Uint8Array(5000).map((_, i) => (i * 7919) & 255));
+    const p = measurePlayer(dir)!;
+    expect(p.totalGzip).toBe(before.totalGzip);
+    expect(p.worldsBytes).toBe(5000);
+    expect(before.worldsBytes).toBe(0);
   });
 
   it('falls back to "all JS is initial" without a manifest', () => {
