@@ -61,7 +61,7 @@ describe('example court', () => {
     expect(inter.camera.lookAt).toEqual(manifest.spawn!.lookAt);
 
     const pos = manifest.spawn!.position;
-    const target = manifest.spawn!.lookAt;
+    const target = manifest.spawn!.lookAt!;
 
     const fx = target[0] - pos[0];
     const fy = target[1] - pos[1];
