@@ -5,6 +5,7 @@ import { LAYER_ALL, LAYER_SOLID, newRayHit, type StaticColliders } from './colli
 import { COUNTDOWN_SEC, Shootout, type ShootoutSignal } from './shootout.js';
 import { CylinderTrigger } from './trigger.js';
 import { addScaled, clamp, copy, distance, horizontalDistance, type Vec3 } from './vec.js';
+import { DEFAULT_VEHICLE, PARKED, Vehicle, type DriveInput } from './vehicle.js';
 import { Walker, type Bounds } from './walker.js';
 
 /**
@@ -186,6 +187,12 @@ export class WorldRuntime {
   shootoutTarget: Vec3 | null = null;
   /** Bodies of the agents that have one, for the viewer to draw. */
   bodies: readonly { role: string; body: AgentBody }[] = [];
+  /** Drivable vehicles by id (interactions.json `interactions[]` entries of type `vehicle`). */
+  readonly vehicles = new Map<string, Vehicle>();
+  /** Id of the vehicle being driven, or null. Only that one gets `driveInput`; the rest hold their brakes. */
+  driving: string | null = null;
+  /** The driver's controls, written by the host every frame while driving. */
+  readonly driveInput: DriveInput = { throttle: 0, steer: 0, brake: false };
 
   private readonly tracked = new Map<string, Tracked>();
   private readonly agents = new Map<string, WorldAgent>();
@@ -243,6 +250,12 @@ export class WorldRuntime {
       };
       item.view = this.objectView(item);
       this.tracked.set(def.id, item);
+    }
+
+    for (const def of interactions.vehicles) {
+      const spawn = def.spawn ?? opts.nodePosition?.(def.node) ?? [0, 0, 0];
+      const params = { ...DEFAULT_VEHICLE, ...def.drive, ...def.body };
+      this.vehicles.set(def.id, new Vehicle(def.id, colliders, params, spawn, def.yaw, this.bounds, def.wheels.radius));
     }
 
     const game = interactions.minigames.find((m) => m.type === BASKETBALL_SHOOTING && this.tracked.has(m.ball));
@@ -537,7 +550,22 @@ export class WorldRuntime {
 
   // ---- internals ------------------------------------------------------------------------------
 
+  /** The vehicle being driven, if any. */
+  get driven(): Vehicle | null {
+    return this.driving ? (this.vehicles.get(this.driving) ?? null) : null;
+  }
+
+  /** Gets in (an id, or the first vehicle) or out (null). Returns the vehicle now driven. */
+  drive(id: string | null | undefined = undefined): Vehicle | null {
+    const next = id === null ? null : (id ?? this.vehicles.keys().next().value ?? null);
+    this.driving = next && this.vehicles.has(next) ? next : null;
+    this.driveInput.throttle = this.driveInput.steer = 0;
+    this.driveInput.brake = false;
+    return this.driven;
+  }
+
   private tickWorld(input: PlayerInput): void {
+    for (const v of this.vehicles.values()) v.step(TICK, v.id === this.driving ? this.driveInput : PARKED);
     const held = this.held ? this.tracked.get(this.held) : undefined;
     const pressed = input.charging && !input.cancel && this.playerEnabled;
     if (held && this.shootout?.phase !== 'countdown') {

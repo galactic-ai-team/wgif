@@ -3,19 +3,21 @@ import type { Vec3 } from '@wgif/format';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { parseGlb } from './glb.js';
-import type { GameState } from './interactions.js';
+import type { GameState, VehicleDef } from './interactions.js';
 import { QualityGovernor } from './quality.js';
 import { mergeStatic, type MergeStats } from './merge.js';
 import { isSky, sceneBounds } from './sky.js';
 import { createRuntime, findNodes, nodeName, type SceneColliders } from './sceneBridge.js';
 import type { AgentBody } from './sim/agents.js';
 import { LAYER_SOLID, newRayHit } from './sim/colliders.js';
+import type { DriveInput, Vehicle } from './sim/vehicle.js';
 import { IDLE_INPUT, type Grabbable, type PlayerInput, type RuntimeEvent, type WorldRuntime } from './sim/runtime.js';
 import { WorldOpenError, type WorldDocument } from './world.js';
 
 export { parseGlb } from './glb.js';
 
-export type ControlMode = 'orbit' | 'walk';
+/** `drive` puts the visitor behind the wheel of the world's vehicle with a chase camera. */
+export type ControlMode = 'orbit' | 'walk' | 'drive';
 
 /** What the viewer needs from the input layer each frame. */
 export interface InputSource {
@@ -35,6 +37,18 @@ interface Dynamic {
   pivot: THREE.Object3D;
   /** Soft contact shadow under it. Moving things do not cast into the shadow map, which is drawn once. */
   blob: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
+}
+
+/** A vehicle and the nodes that draw it. */
+interface Ride {
+  vehicle: Vehicle;
+  def: VehicleDef;
+  node: THREE.Object3D;
+  front: THREE.Object3D[];
+  rear: THREE.Object3D[];
+  blob: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
+  /** Footprint of the body, for its contact shadow. */
+  size: THREE.Vector3;
 }
 
 interface Flash {
@@ -74,6 +88,13 @@ export class WorldViewer {
   private world: THREE.Group | null = null;
   private readonly bodies = new Map<string, THREE.Object3D>();
   private dynamics: Dynamic[] = [];
+  private rides: Ride[] = [];
+  /** The vehicle orbit centres on: the last one driven, else the first. */
+  private focus: Ride | null = null;
+  /** The look point the chase camera eases toward. */
+  private readonly chaseLook = new THREE.Vector3();
+  /** Driver controls, read every frame in drive mode (see DriveControls). */
+  driveSource: { readonly drive: DriveInput } | null = null;
   private flashes: Flash[] = [];
   private overview = { position: new THREE.Vector3(0, 4.7, 14), target: new THREE.Vector3(0, 1, 0) };
   /** What the overview frames (side it is seen from, width across), so a snapshot can frame it for its own shape. */
@@ -222,6 +243,10 @@ export class WorldViewer {
       mesh.receiveShadow = !sky;
     });
     for (const object of made.runtime.objects.values()) this.bind(object, group);
+    for (const def of doc.interactions.vehicles) {
+      const vehicle = made.runtime.vehicles.get(def.id);
+      if (vehicle) this.bindVehicle(vehicle, def, group);
+    }
     // PERF.md fix #1: what never moves becomes a few draw calls. Objects and the props that light up keep their own nodes.
     const keep = new Set<string>([...doc.interactions.objects.map((o) => o.node ?? o.id), ...made.built.props]);
     // A world's own sky (extras.wgif.role "sky") stays out of the overview framing and the shadow box.
@@ -255,9 +280,22 @@ export class WorldViewer {
     this.overview.target.set(center.x, box.min.y + size.y * 0.25, center.z);
     this.overview.position.copy(this.overview.target).addScaledVector(side, Math.cos(tilt) * reach).add(new THREE.Vector3(0, Math.sin(tilt) * reach, 0));
     this.orbit.maxDistance = Math.max(radius * 4, reach * 2);
+    this.orbit.minDistance = 0;
+    // A world with a vehicle is about the vehicle: orbit and its preview centre on it.
+    const ride = (this.focus = this.rides[0] ?? null);
+    if (ride) {
+      const v = ride.vehicle;
+      const carSide = new THREE.Vector3(spawn[0] - v.pos[0], 0, spawn[2] - v.pos[2]);
+      if (carSide.lengthSq() < 1e-6) carSide.set(0.6, 0, 1);
+      this.framing = { side: carSide.normalize(), width: Math.max(8, ride.size.z * 2.1) };
+      this.focusVehicle(ride, carSide);
+      this.orbit.minDistance = Math.max(2, ride.size.z * 0.6);
+    }
+    if (this.mode === 'drive' && !made.runtime.drive()) this.mode = 'orbit';
+    this.orbit.enabled = this.mode === 'orbit';
     made.runtime.playerEnabled = this.mode === 'walk';
     if (this.mode === 'walk') this.eyeY = made.runtime.player.eye[1];
-    else this.resetCamera();
+    else if (this.mode === 'orbit') this.resetCamera();
     this.resize();
     this.invalidate(true);
     return made;
@@ -271,17 +309,40 @@ export class WorldViewer {
     this.invalidate();
   }
 
+  /** Where orbit view is centred (for tests and the host). */
+  get orbitTarget(): Vec3 {
+    const t = this.orbit.target;
+    return [t.x, t.y, t.z];
+  }
+
+  /** True when the open world has something to drive. */
+  get canDrive(): boolean {
+    return this.rides.length > 0;
+  }
+
   setMode(mode: ControlMode): void {
     if (mode === this.mode) return;
-    this.mode = mode;
     const rt = this.runtime;
+    if (mode === 'drive' && !rt?.drive()) return;
+    const from = this.mode;
+    this.mode = mode;
     this.orbit.enabled = mode === 'orbit';
     if (rt) {
-      if (mode === 'orbit') rt.drop();
+      if (mode !== 'walk') rt.drop();
       rt.playerEnabled = mode === 'walk';
       if (mode === 'walk') this.eyeY = rt.player.eye[1];
+      if (mode !== 'drive') rt.drive(null);
     }
-    if (mode === 'orbit') this.resetCamera();
+    const ride = this.rides.find((r) => r.vehicle.id === rt?.driving) ?? this.focus;
+    if (ride) this.focus = ride;
+    if (mode === 'drive' && ride) {
+      this.chaseLook.copy(this.lookPoint(ride.vehicle, ride.vehicle.yaw, ride.vehicle.pos));
+    } else if (mode === 'orbit' && from === 'drive' && ride) {
+      // Out of the car: orbit it where it stopped, starting from the chase view.
+      this.focusVehicle(ride, this.camera.position.clone().sub(vecOf(ride.vehicle.pos)).setY(0));
+      this.orbit.target.copy(this.overview.target);
+      this.orbit.update();
+    } else if (mode === 'orbit') this.resetCamera();
     this.invalidate();
     this.hooks.onModeChange?.(mode);
   }
@@ -332,6 +393,8 @@ export class WorldViewer {
     for (const flash of this.flashes) flash.material.dispose();
     this.flashes = [];
     this.dynamics = [];
+    this.rides = [];
+    this.focus = null;
     this.bodies.clear();
     for (const root of [this.dynamicRoot, this.world]) {
       root?.traverse((o) => {
@@ -369,6 +432,88 @@ export class WorldViewer {
     const blob = this.blob();
     this.dynamicRoot.add(blob);
     this.dynamics.push({ object, pivot, blob });
+  }
+
+  /**
+   * Ties a vehicle to its node. The node moves to the dynamic root (its origin is the ground point
+   * under the body, authored facing -Z), so the static merge and the shadow map leave it alone.
+   */
+  private bindVehicle(vehicle: Vehicle, def: VehicleDef, world: THREE.Group): void {
+    const node = findNodes(world, def.node)[0];
+    if (!node) return;
+    this.dynamicRoot.attach(node);
+    node.position.set(0, 0, 0);
+    node.rotation.set(0, 0, 0);
+    node.updateMatrixWorld(true);
+    const size = new THREE.Box3().setFromObject(node).getSize(new THREE.Vector3());
+    node.traverse((o) => (o.castShadow = false));
+    const wheels = (names: string[]): THREE.Object3D[] =>
+      names.flatMap((n) => findNodes(node, n)).map((w) => {
+        w.userData.wgifBase = w.quaternion.clone();
+        return w;
+      });
+    const blob = this.blob();
+    blob.material.opacity = 0.6;
+    this.dynamicRoot.add(blob);
+    this.rides.push({ vehicle, def, node, front: wheels(def.wheels.front), rear: wheels(def.wheels.rear), blob, size });
+  }
+
+  /** Draws a vehicle where the simulation has it. Returns true when it moved. */
+  private syncRide(rt: WorldRuntime, ride: Ride): boolean {
+    const v = ride.vehicle, a = rt.alpha, n = ride.node;
+    const x = v.prev[0] + (v.pos[0] - v.prev[0]) * a, y = v.prev[1] + (v.pos[1] - v.prev[1]) * a, z = v.prev[2] + (v.pos[2] - v.prev[2]) * a;
+    const yaw = v.prevYaw + (v.yaw - v.prevYaw) * a, pitch = v.prevPitch + (v.pitch - v.prevPitch) * a;
+    const moved = n.position.x !== x || n.position.y !== y || n.position.z !== z || n.rotation.y !== yaw || n.rotation.x !== pitch || v.moving;
+    if (!moved && ride.blob.visible) return false;
+    n.position.set(x, y, z);
+    // For a body facing -Z, a positive turn about +X lifts the nose: positive pitch is nose up.
+    n.rotation.set(pitch, yaw, 0, 'YXZ');
+    for (const w of ride.front) w.quaternion.copy(w.userData.wgifBase as THREE.Quaternion).multiply(q1.setFromAxisAngle(Y_AXIS, v.steer)).multiply(q2.setFromAxisAngle(X_AXIS, -v.wheelSpin));
+    for (const w of ride.rear) w.quaternion.copy(w.userData.wgifBase as THREE.Quaternion).multiply(q2.setFromAxisAngle(X_AXIS, -v.wheelSpin));
+    const b = ride.blob;
+    b.visible = true;
+    b.position.set(x, y + 0.015, z);
+    b.rotation.y = yaw;
+    b.scale.set(ride.size.x * 1.35, 1, ride.size.z * 1.2);
+    return true;
+  }
+
+  /** Where the chase camera looks: a little ahead of the body, above the roof line. */
+  private lookPoint(v: Vehicle, yaw: number, pos: ArrayLike<number>): THREE.Vector3 {
+    return lookAt.set(pos[0]! - Math.sin(yaw) * 1.5, pos[1]! + 1.1, pos[2]! - Math.cos(yaw) * 1.5);
+  }
+
+  /** Chase camera: behind and above the driven vehicle, easing after it, never through a wall. */
+  private chase(rt: WorldRuntime, dt: number): void {
+    const ride = this.rides.find((r) => r.vehicle.id === rt.driving);
+    if (!ride) return;
+    const v = ride.vehicle, n = ride.node, cam = ride.def.camera;
+    const yaw = n.rotation.y;
+    // Reversing swings the view round only a little: the camera stays behind the car.
+    const back = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
+    const pivot = new THREE.Vector3(n.position.x, n.position.y + cam.height * 0.5, n.position.z);
+    const want = pivot.clone().addScaledVector(back, cam.distance).add(new THREE.Vector3(0, cam.height * 0.5, 0));
+    const dir = want.clone().sub(pivot), dist = dir.length();
+    dir.divideScalar(dist);
+    if (rt.colliders.raycast(pivot.x, pivot.y, pivot.z, dir.x, dir.y, dir.z, dist, LAYER_SOLID, ray)) want.copy(pivot).addScaledVector(dir, Math.max(0.5, ray.t - 0.3));
+    const k = 1 - Math.exp(-dt * (v.bumped ? 3 : 5));
+    this.camera.position.lerp(want, k);
+    if (rt.colliders.raycast(this.camera.position.x, this.camera.position.y + 2, this.camera.position.z, 0, -1, 0, 4, LAYER_SOLID, ray) && this.camera.position.y < ray.y + 0.4) {
+      this.camera.position.y = ray.y + 0.4;
+    }
+    this.chaseLook.lerp(this.lookPoint(v, yaw, [n.position.x, n.position.y, n.position.z]), 1 - Math.exp(-dt * 10));
+    this.camera.lookAt(this.chaseLook);
+  }
+
+  /** Centres the orbit overview on a vehicle where it stands, seen from `from` (a direction on the ground). */
+  private focusVehicle(ride: Ride, from: THREE.Vector3): void {
+    const v = ride.vehicle;
+    const dir = from.lengthSq() > 1e-6 ? from.clone().normalize() : new THREE.Vector3(0.6, 0, 1).normalize();
+    const reach = Math.max(5, ride.size.z * 1.9);
+    const tilt = THREE.MathUtils.degToRad(22);
+    this.overview.target.set(v.pos[0], v.pos[1] + ride.size.y * 0.45, v.pos[2]);
+    this.overview.position.copy(this.overview.target).addScaledVector(dir, Math.cos(tilt) * reach).add(new THREE.Vector3(0, Math.sin(tilt) * reach, 0));
+    this.framing.side.copy(dir);
   }
 
   /** A simple stand-in figure for an agent: a capsule with a visor showing which way it faces. */
@@ -417,6 +562,12 @@ export class WorldViewer {
       if (walking) {
         const [yaw, pitch] = this.input.consumeLook();
         if (yaw !== 0 || pitch !== 0) rt.player.look(yaw, pitch);
+      }
+      if (this.mode === 'drive') {
+        const d = this.driveSource?.drive;
+        rt.driveInput.throttle = d?.throttle ?? 0;
+        rt.driveInput.steer = d?.steer ?? 0;
+        rt.driveInput.brake = d?.brake ?? false;
       }
       rt.update(dt, walking ? this.input.input : IDLE_INPUT);
       active = this.sync(rt, dt);
@@ -475,6 +626,21 @@ export class WorldViewer {
         moving = true;
       }
     }
+
+    for (const ride of this.rides) {
+      const was = this.mode === 'orbit' && ride === this.focus ? ride.node.position.clone() : null;
+      if (!this.syncRide(rt, ride)) continue;
+      moving = true;
+      // Orbit follows the car it centres on while it rolls to a stop after the driver got out.
+      if (was) {
+        const d = ride.node.position.clone().sub(was);
+        this.orbit.target.add(d);
+        this.camera.position.add(d);
+        this.overview.target.add(d);
+        this.overview.position.add(d);
+      }
+    }
+    if (this.mode === 'drive') this.chase(rt, dt);
 
     if (this.mode === 'walk') {
       const eye = rt.player.eyeInto(eyeAt);
@@ -588,6 +754,12 @@ export class WorldViewer {
 }
 
 const axis = new THREE.Vector3();
+const Y_AXIS = new THREE.Vector3(0, 1, 0);
+const X_AXIS = new THREE.Vector3(1, 0, 0);
+const q1 = new THREE.Quaternion();
+const q2 = new THREE.Quaternion();
+const lookAt = new THREE.Vector3();
+const vecOf = (p: ArrayLike<number>): THREE.Vector3 => new THREE.Vector3(p[0], p[1], p[2]);
 const eyeAt: Vec3 = [0, 0, 0];
 const glow = new THREE.Color(1, 0.62, 0.12);
 

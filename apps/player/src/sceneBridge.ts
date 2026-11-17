@@ -117,13 +117,13 @@ export function applySceneOps(scene: THREE.Object3D, ops: SceneOp[]): { removed:
  * Solid: the nodes listed in interactions.json `colliders.static` (if the file has no such list,
  * every node hinted `extras.wgif.collider: "static"`), plus primitives added by layers. Props
  * (balls only): the nodes of a minigame's target triggers and nodes hinted `role: "target"`, so the
- * ball bounces off a rim it can see. Grabbable nodes move, so they are never static.
+ * ball bounces off a rim it can see. Grabbable and vehicle nodes move, so they are never static.
  */
 export function buildColliders(scene: THREE.Object3D, interactions: Interactions, removed: ReadonlySet<string> = new Set()): SceneColliders {
   const colliders = new StaticColliders();
   const warnings: string[] = [];
   const solid: string[] = [], props: string[] = [];
-  const moving = new Set(interactions.objects.filter((o) => o.kind === 'grabbable').map((o) => o.node ?? o.id));
+  const moving = new Set([...interactions.objects.filter((o) => o.kind === 'grabbable').map((o) => o.node ?? o.id), ...interactions.vehicles.map((v) => v.node)]);
   const hinted = (key: string, value: unknown): string[] => {
     const names = new Set<string>();
     scene.traverse((o) => {

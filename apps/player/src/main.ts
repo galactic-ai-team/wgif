@@ -1,6 +1,7 @@
 import { createRebounder, reboundSpot, type RebounderAgent } from './ai.js';
 import { Sfx } from './audio.js';
 import { PlayerControls } from './controls.js';
+import { DriveControls } from './driveControls.js';
 import { EditSession, isLayerOp } from './edit.js';
 import { exportWorld, slug, type ExportResult } from './exporter.js';
 import { Hud } from './hud.js';
@@ -20,6 +21,7 @@ const li = (text: string, className = ''): HTMLLIElement => Object.assign(docume
 const stage = $('stage');
 const fileInput = $<HTMLInputElement>('file');
 const modeBtn = $<HTMLButtonElement>('mode');
+const driveBtn = $<HTMLButtonElement>('drive');
 const playBtn = $<HTMLButtonElement>('play');
 const editBtn = $<HTMLButtonElement>('edit');
 const muteBtn = $<HTMLButtonElement>('mute');
@@ -84,6 +86,23 @@ const controls = new PlayerControls(stage, { stick: $('stick'), knob: $('knob'),
   onLockChange: () => setHint(),
 });
 
+const driveControls = new DriveControls($('drive-pad'), {
+  onReset: () => viewer?.runtime?.driven?.reset(),
+});
+
+/** Turns on the input layer the current mode reads: walking or driving (orbit has its own). */
+function applyControls(): void {
+  controls.setEnabled(viewer?.mode === 'walk');
+  driveControls.setEnabled(viewer?.mode === 'drive');
+}
+
+/** Gets into the world's vehicle, or back out to orbit around it. */
+function toggleDrive(): void {
+  if (!viewer?.canDrive) return;
+  sfx.unlock();
+  setMode(viewer.mode === 'drive' ? 'orbit' : 'drive');
+}
+
 function notify(message: string, kind: 'error' | 'ok' = 'ok', details: string[] = [], ms = 6000): void {
   toast.textContent = [message, ...details.slice(0, 8)].join('\n');
   toast.className = kind === 'ok' ? 'ok' : '';
@@ -99,25 +118,30 @@ let hintTimer: ReturnType<typeof setTimeout> | null = null;
 /** Body classes the phone layout keys on: `touch` once a finger is seen, `playing` while walking (not editing). */
 function setLayout(): void {
   document.body.classList.toggle('touch', controls.touch);
-  document.body.classList.toggle('playing', viewer?.mode === 'walk' && !editing);
+  document.body.classList.toggle('playing', (viewer?.mode === 'walk' || viewer?.mode === 'drive') && !editing);
+  document.body.classList.toggle('driving', viewer?.mode === 'drive');
 }
 
 function setHint(): void {
   const mode: ControlMode = viewer?.mode ?? 'orbit';
   setLayout();
-  modeBtn.textContent = `Mode: ${mode === 'orbit' ? 'Orbit' : 'Walk'}`;
+  modeBtn.textContent = `Mode: ${mode === 'orbit' ? 'Orbit' : mode === 'walk' ? 'Walk' : 'Drive'}`;
   hint.hidden = !viewer?.runtime;
   hint.textContent =
     mode === 'orbit'
-      ? 'Orbit: drag to rotate · scroll/pinch to zoom · right-drag to pan'
-      : controls.touch
+      ? `Orbit: drag to rotate · scroll/pinch to zoom · right-drag to pan${viewer?.canDrive ? (controls.touch ? ' · 🚗 Drive to take the wheel' : ' · F or Enter to drive') : ''}`
+      : mode === 'drive'
+        ? controls.touch
+          ? 'Drive: ◀ ▶ steer · hold Gas · hold Brake to stop, then reverse · Exit car to orbit'
+          : 'Drive: W/↑ gas · S/↓ brake, then reverse · A/D or ←/→ steer · Space brakes · R resets the car · F or Enter gets out'
+        : controls.touch
         ? 'Walk: left thumb moves · drag anywhere else to look'
         : controls.locked
           ? 'WASD/arrows move · Shift runs · click or Space shoots · E picks up/drops · R resets the ball · Esc frees the mouse'
           : 'Walk: click the scene to look around · WASD/arrows to move';
   // On a phone the hint sits over the play area: show it for a moment, then get out of the way.
   if (hintTimer) clearTimeout(hintTimer);
-  if (controls.touch && mode === 'walk') hintTimer = setTimeout(() => (hint.hidden = true), 5000);
+  if (controls.touch && mode !== 'orbit') hintTimer = setTimeout(() => (hint.hidden = true), 5000);
 }
 
 function setMode(mode: ControlMode): void {
@@ -127,7 +151,7 @@ function setMode(mode: ControlMode): void {
     if (editing) setEditing(false);
   }
   viewer.setMode(mode);
-  controls.setEnabled(mode === 'walk');
+  applyControls();
   setHint();
   syncButtons();
 }
@@ -136,6 +160,9 @@ function syncButtons(): void {
   const rt = viewer?.runtime ?? null;
   const doc = session?.doc;
   modeBtn.disabled = !rt;
+  driveBtn.hidden = !viewer?.canDrive;
+  driveBtn.textContent = viewer?.mode === 'drive' ? '■ Exit car' : '🚗 Drive';
+  driveBtn.setAttribute('aria-pressed', String(viewer?.mode === 'drive'));
   playBtn.hidden = !rt?.shootout;
   playBtn.textContent = rt?.shootout?.running ? '■ Stop' : '▶ Shootout';
   editBtn.hidden = !doc?.policy.canEdit;
@@ -266,6 +293,7 @@ async function openBytes(bytes: Uint8Array, name: string): Promise<void> {
     const saved = await saver.load();
     try {
       viewer ??= new WorldViewer(stage, controls);
+      viewer.driveSource = driveControls;
     } catch {
       throw new WorldOpenError('This browser could not start WebGL, which the player needs to draw the world.');
     }
@@ -279,7 +307,7 @@ async function openBytes(bytes: Uint8Array, name: string): Promise<void> {
     await mount(draft ? withEdits(doc, session.edits.ops) : doc, mergeState(doc.initialState, saved?.state));
     $('empty').hidden = true;
     $('refused').hidden = true;
-    controls.setEnabled(viewer.mode === 'walk');
+    applyControls();
     setHint();
     syncButtons();
     renderInfo();
@@ -301,6 +329,7 @@ function showRefused(name: string, err: WorldOpenError): void {
   if (underneath) {
     if (document.pointerLockElement) document.exitPointerLock();
     controls.setEnabled(false);
+    driveControls.setEnabled(false);
   }
   $('refused-back').hidden = !underneath;
   const img = $<HTMLImageElement>('refused-preview');
@@ -316,7 +345,7 @@ function showRefused(name: string, err: WorldOpenError): void {
 
 $('refused-back').addEventListener('click', () => {
   $('refused').hidden = true;
-  if (viewer?.runtime) controls.setEnabled(viewer.mode === 'walk');
+  if (viewer?.runtime) applyControls();
 });
 
 async function openFile(file: File): Promise<void> {
@@ -675,6 +704,11 @@ fileInput.addEventListener('change', () => {
 });
 
 modeBtn.addEventListener('click', () => setMode(viewer?.mode === 'orbit' ? 'walk' : 'orbit'));
+driveBtn.addEventListener('click', () => {
+  toggleDrive();
+  // Keys drive the car, not the button: Space or Enter on a focused button would click it again.
+  driveBtn.blur();
+});
 playBtn.addEventListener('click', () => {
   const rt = viewer?.runtime;
   if (rt?.shootout?.running) {
@@ -701,7 +735,15 @@ paintMute();
 
 window.addEventListener('keydown', (e) => {
   const el = e.target as HTMLElement | null;
-  if (e.code === 'Enter' && !e.repeat && el?.tagName !== 'INPUT' && el?.tagName !== 'BUTTON' && viewer?.runtime?.shootout && !viewer.runtime.shootout.running) startShootout();
+  const typingInto = el?.tagName === 'INPUT' || el?.tagName === 'TEXTAREA' || el?.tagName === 'SELECT' || !!el?.isContentEditable;
+  if (e.repeat || typingInto || e.ctrlKey || e.metaKey || e.altKey) return;
+  // F (or Enter, in a world with no Shootout) gets into the car and back out.
+  if (viewer?.canDrive && !editing && (e.code === 'KeyF' || (e.code === 'Enter' && el?.tagName !== 'BUTTON' && !viewer.runtime?.shootout))) {
+    e.preventDefault();
+    toggleDrive();
+    return;
+  }
+  if (e.code === 'Enter' && el?.tagName !== 'BUTTON' && viewer?.runtime?.shootout && !viewer.runtime.shootout.running) startShootout();
 });
 
 let dragDepth = 0;
@@ -763,6 +805,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
     get session() { return session; },
     setMode,
     setEditing,
+    toggleDrive,
     startShootout,
   },
 });

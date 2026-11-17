@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Renders each sample world in the real player and saves the first-person spawn view as the
+ * Renders each sample world in the real player and saves the first-person spawn view (the orbit
+ * view centred on the car for worlds with a vehicle) as the
  * world's preview (assets/previews/<name>.png, 480x288, palette PNG well under 256 KiB).
  * Run by a human after changing a world, then rebuild (`npm run build --workspace @wgif/example-worlds`)
  * so the new preview is packed. Needs Chrome, playwright-core and Python 3 with Pillow.
@@ -18,7 +19,7 @@ import { chromium } from 'playwright-core';
 const args = process.argv.slice(2);
 const base = args.find((a) => /^https?:/.test(a)) ?? 'http://localhost:4173/';
 const names = args.filter((a) => !/^https?:/.test(a));
-const worlds = names.length ? names : ['gallery', 'rooftop', 'city'];
+const worlds = names.length ? names : ['gallery', 'rooftop', 'city', 'car'];
 const out = resolve(fileURLToPath(new URL('../assets/previews/', import.meta.url)));
 const tmp = mkdtempSync(join(tmpdir(), 'wgif-previews-'));
 
@@ -28,7 +29,9 @@ try {
     const page = await (await browser.newContext({ viewport: { width: 1280, height: 800 } })).newPage();
     await page.goto(new URL(`./?src=samples/${name}.wgif`, base).href);
     await page.waitForFunction(() => !!window.wgifPlayer?.runtime, null, { timeout: 60000 });
-    await page.evaluate(() => window.wgifPlayer.setMode('walk'));
+    await page.evaluate(() => {
+      if (!window.wgifPlayer.viewer.canDrive) window.wgifPlayer.setMode('walk');
+    });
     await page.waitForTimeout(2500);
     const raw = join(tmp, `${name}.png`);
     await page.locator('#stage canvas').screenshot({ path: raw });
