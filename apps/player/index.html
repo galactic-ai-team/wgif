@@ -2,9 +2,13 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#0b0d17" />
+    <meta name="description" content="Open a .wgif world and explore it. Works offline once installed." />
+    <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%22.9em%22 font-size=%2290%22%3E🌌%3C/text%3E%3C/svg%3E" />
+    <link rel="apple-touch-icon" href="./icons/icon-192.png" />
     <title>WGIF Player</title>
     <link rel="stylesheet" href="./src/style.css" />
   </head>
@@ -12,9 +16,12 @@
     <header>
       <div class="brand">🌌 <strong>WGIF Player</strong> <span class="muted">v0.1 proof</span></div>
       <div class="actions">
-        <label class="btn" for="file">Open .wgif<input id="file" type="file" accept=".wgif,application/vnd.wgif+zip,application/zip" hidden /></label>
+        <label class="btn" for="file">Open .wgif<input id="file" type="file" hidden /></label>
         <button class="btn" id="sample" type="button">Load sample court</button>
         <button class="btn" id="mode" type="button" disabled>Mode: Orbit</button>
+        <button class="btn primary" id="play" type="button" hidden>▶ Shootout</button>
+        <button class="btn" id="edit" type="button" aria-pressed="false" hidden>Edit</button>
+        <button class="btn" id="mute" type="button" aria-pressed="false" aria-label="Sound">🔊</button>
       </div>
     </header>
     <main>
@@ -23,7 +30,51 @@
           <p><strong>Drop a .wgif file here</strong></p>
           <p class="muted">or use “Open .wgif” / “Load sample court”. Everything runs locally in your browser.</p>
         </div>
+        <div id="refused" class="overlay" hidden>
+          <img id="refused-preview" alt="Preview of the world that could not be opened" hidden />
+          <p><strong id="refused-title"></strong></p>
+          <p id="refused-detail" class="muted"></p>
+          <button id="refused-back" type="button" hidden>Back to the open world</button>
+        </div>
         <div id="drop" class="overlay drop" hidden>Release to open</div>
+
+        <div id="scoreboard" hidden>
+          <span class="cell"><small>time</small><b id="hud-time">60</b></span>
+          <span class="cell"><small>score</small><b id="hud-score">0</b></span>
+          <span class="cell"><small>shots</small><b id="hud-shots">0/0</b></span>
+          <span class="cell"><small>best</small><b id="hud-best">0</b></span>
+        </div>
+        <div id="banner" aria-live="polite" hidden></div>
+        <div id="result" class="panel" hidden>
+          <h3 id="result-title">Time!</h3>
+          <p id="result-line"></p>
+          <button class="btn primary" id="again" type="button">Play again</button>
+          <button class="btn" id="result-close" type="button">Close</button>
+        </div>
+        <div id="crosshair" hidden></div>
+        <div id="power" hidden><div id="power-fill"></div></div>
+        <div id="prompt" hidden></div>
+
+        <div id="stick" hidden><div id="knob"></div></div>
+        <button id="action" class="touch-btn" type="button" hidden>Grab</button>
+        <button id="ballreset" class="touch-btn small" type="button" aria-label="Put the ball back" hidden>↺</button>
+
+        <div id="editor" class="panel" hidden>
+          <strong>Edit</strong> <span id="ed-count" class="muted"></span>
+          <p id="ed-note" class="muted"></p>
+          <button class="btn" id="ed-ball" type="button">Put the ball's start here</button>
+          <button class="btn" id="ed-block" type="button">Add a block here</button>
+          <button class="btn" id="ed-spawn" type="button">Visitors start where I stand</button>
+          <div id="ed-rules">
+            <label>Seconds <input id="ed-duration" type="number" min="5" max="600" step="5" inputmode="numeric" /></label>
+            <label>Points <input id="ed-points" type="number" min="1" max="10" step="1" inputmode="numeric" /></label>
+          </div>
+          <div class="row">
+            <button class="btn" id="ed-undo" type="button" disabled>Undo</button>
+            <button class="btn" id="ed-discard" type="button" disabled>Discard edits</button>
+          </div>
+        </div>
+        <pre id="perf" hidden></pre>
         <div id="hint" class="hint" hidden></div>
       </div>
       <aside id="info" hidden>
@@ -31,7 +82,35 @@
         <h2 id="title"></h2>
         <p id="creator" class="muted"></p>
         <p><span id="badge" class="badge"></span> <span id="sig" class="badge"></span></p>
+        <p id="mode-note" class="small"></p>
+        <p id="trust" class="small muted"></p>
         <p id="desc"></p>
+        <p id="ai" class="muted small"></p>
+        <section id="game" hidden>
+          <h3>Shootout</h3>
+          <p id="game-stats" class="small"></p>
+        </section>
+        <section id="share">
+          <h3>Save and export</h3>
+          <p id="save-note" class="small muted"></p>
+          <div id="export-box">
+            <label class="field">Your name <input id="by" type="text" maxlength="80" autocomplete="name" placeholder="for the history" /></label>
+            <button class="btn" id="export" type="button">Export .wgif</button>
+            <button class="btn" id="share-wgif" type="button" hidden>Share / Save to Files…</button>
+            <button class="btn" id="reopen" type="button" hidden>Open the exported copy</button>
+          </div>
+          <button class="btn" id="save-image" type="button">Save preview image</button>
+          <p id="open-note" class="small muted" hidden></p>
+          <button class="btn" id="forget" type="button">Reset progress</button>
+        </section>
+        <section id="layers-box" hidden>
+          <h3>Layers</h3>
+          <ul id="layers" class="small"></ul>
+        </section>
+        <section id="history-box" hidden>
+          <h3>History</h3>
+          <ul id="history" class="small"></ul>
+        </section>
         <ul id="issues"></ul>
         <details>
           <summary>Files</summary>

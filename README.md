@@ -17,7 +17,9 @@ A Galactic AI Team project. Coordinator: Lumi · Team: GPT-6 (Ace), Claude, Gemi
 apps/player/        WGIF Player — Vite + TypeScript + Three.js. Open a .wgif, orbit or walk around it.
 packages/format/    @wgif/format — ZIP container, manifest types, JSON Schema, validator,
                     pack/unpack, ed25519 signing, edit export.
-examples/court/     Handcrafted, procedurally built basketball court → court.wgif (~30 KB).
+packages/ai/        @wgif/ai — embedded AI runtime: rules + tiny ONNX NPCs, model loader with fallback.
+examples/court/     Handcrafted, procedurally built basketball court → court.wgif (~40 KB),
+                    with a rebounder NPC (rules model + distilled ONNX clone).
 docs/               Spec draft and the Phase One checklist.
 ```
 

@@ -1,0 +1,19 @@
+{
+  "release": "v0.1.0",
+  "formatVersion": "0.1",
+  "gates": {
+    "owner": { "complete": false, "evidence": "TODO: owner's explicit approval reference" },
+    "normative": { "complete": false, "evidence": "TODO: approved specification revision" },
+    "capabilities": { "complete": false, "evidence": "TODO: capability and fallback browser test record" },
+    "offline": { "complete": false, "evidence": "TODO: offline PWA/local-player test record" },
+    "security": { "complete": false, "evidence": "TODO: negative-fixture and GLB test result" },
+    "examples": { "complete": false, "evidence": "TODO: reproducibility and CLI log" },
+    "smoke": { "complete": false, "evidence": "TODO: full CI run and browser test report" },
+    "versions": { "complete": false, "evidence": "TODO: lockfile/version review" },
+    "release": { "complete": false, "evidence": "TODO: release notes and artifact manifest" }
+  },
+  "artifacts": {
+    "examples/court/court.wgif": "TODO: sha256 of committed artifact",
+    "examples/court/court.gen.wgif": "TODO: sha256 of deterministic generated artifact"
+  }
+}

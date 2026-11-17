@@ -1,10 +1,44 @@
-import { unpackWgif, type WgifWorld } from '@wgif/format';
+import { signingHash, unpackWgif, type Vec3, type WgifWorld } from '@wgif/format';
+import { applyEdits, layerOps, parseLayer, type EditOp, type LayerFile, type SceneOp } from './edit.js';
+import { isJson, parseGameState, parseInteractions, readJson, unsupportedStateFields, type GameState, type Interactions, type Json } from './interactions.js';
+
+/** Capabilities actually implemented by this player, not merely known to the WGIF spec. */
+const PLAYER_CAPABILITIES = new Set([
+  'scene.glb',
+  'interaction.camera',
+  // @wgif/ai ships the rules runtime (rebounder NPC); the court requires it.
+  // 'runtime.onnx' is deliberately NOT listed: the player runs ONNX models
+  // only through the JS MLP evaluator for small MLPs, not arbitrary graphs,
+  // and the court does not require it (rules fallback).
+  'runtime.rules',
+  // The world runtime in src/sim/: grabbing, cylinder triggers (on.enterFromAbove, on.enter,
+  // and on.grab on grabbables, with the score / reset / activate events), the Shootout, and the
+  // initial game-state.json seed (high scores, plays, object positions; other fields are reported).
+  'interaction.grab',
+  'interaction.trigger',
+  'minigame.basketball-shooting',
+  'state.initial',
+  // Overlay layers (add / move / remove primitives), applied in src/edit.ts.
+  'layer.primitives',
+]);
 
 export class WorldOpenError extends Error {
+  /** The world's own preview image, when it can be shown instead of a world this player cannot run. */
+  preview?: { bytes: Uint8Array; mediaType: string };
+
   constructor(message: string, public details: string[] = []) {
     super(message);
     this.name = 'WorldOpenError';
   }
+}
+
+const PREVIEW_TYPES: Record<string, string> = { png: 'image/png', gif: 'image/gif', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' };
+
+function previewOf(world: WgifWorld): WorldOpenError['preview'] {
+  const path = world.manifest.entry.preview;
+  const bytes = path ? world.files[path] : undefined;
+  const mediaType = PREVIEW_TYPES[path?.split('.').pop()?.toLowerCase() ?? ''];
+  return bytes && mediaType ? { bytes, mediaType } : undefined;
 }
 
 /** Opens and validates a .wgif. Throws WorldOpenError with readable details if it cannot be played. */
@@ -18,7 +52,156 @@ export async function openWorld(bytes: Uint8Array): Promise<WgifWorld> {
   if (!world.report.ok) {
     throw new WorldOpenError('This .wgif failed validation', world.report.errors.map((e) => `${e.code}: ${e.message}`));
   }
+  const missing = (world.manifest.requires ?? []).filter((cap) => !PLAYER_CAPABILITIES.has(cap));
+  if (missing.length) {
+    const error = new WorldOpenError('This world requires unsupported player features', missing.map((cap) => `requires: ${cap}`));
+    // A world this player cannot run still shows what it is (its preview), with what is missing.
+    error.preview = previewOf(world);
+    throw error;
+  }
   return world;
+}
+
+export interface LoadedLayer {
+  id: string;
+  path: string;
+  author: string;
+  created?: string;
+  file: LayerFile;
+  /** False when the layer file could not be read; it is listed but changes nothing. */
+  ok: boolean;
+}
+
+/** What the creator's mode allows (SPEC §7). */
+export type EditPolicy =
+  /** Edits rewrite the base files; a creator signature over them is dropped on export. */
+  | { canEdit: true; via: 'base' }
+  /** Edits become a new layer; the base world and its signature stay intact. */
+  | { canEdit: true; via: 'layer' }
+  | { canEdit: false; via: null };
+
+/** A world as the player runs it: the container plus its interactions, layers and initial state, resolved. */
+export interface WorldDocument {
+  world: WgifWorld;
+  /** Hash of the signed view of the manifest. Layers do not change it. */
+  signingHash: string;
+  /** Key for local saves: world id + signing hash. */
+  saveKey: string;
+  /** interactions.json as written in the file. Edits are applied to a copy of this on export. */
+  interactionsRaw: Json | null;
+  /** Ids in use (interaction objects and layer primitives), so new primitives get a free one. */
+  ids: Set<string>;
+  /** Interactions with every layer applied. */
+  interactions: Interactions;
+  /** What the layers do to the scene graph, in order (see src/sceneBridge.ts). */
+  sceneOps: SceneOp[];
+  layers: LoadedLayer[];
+  /** Where the visitor starts: the manifest, else interactions.json. */
+  spawn: { position: Vec3; lookAt?: Vec3 } | null;
+  /** game-state.json as read from the file. */
+  initialState: GameState;
+  policy: EditPolicy;
+  warnings: string[];
+}
+
+export function editPolicy(mode: WgifWorld['manifest']['mode']): EditPolicy {
+  return mode === 'editable' ? { canEdit: true, via: 'base' } : mode === 'layered' ? { canEdit: true, via: 'layer' } : { canEdit: false, via: null };
+}
+
+export const saveKey = (id: string, hash: string): string => `${id}@${hash}`;
+
+/** Reads a validated world's interactions, layers and state. Never throws: what it cannot use becomes a warning. */
+export async function loadDocument(world: WgifWorld): Promise<WorldDocument> {
+  const { manifest, files } = world;
+  const warnings: string[] = [];
+  const interactionsPath = manifest.entry.interactions, statePath = manifest.entry.state;
+  const rawInteractions = interactionsPath ? readJson(files[interactionsPath]) : null;
+
+  // Layers only count in a layered world (the validator rejects them anywhere else).
+  const layers: LoadedLayer[] = [];
+  for (const entry of manifest.mode === 'layered' ? (manifest.layers ?? []) : []) {
+    const parsed = parseLayer(readJson(files[entry.path]));
+    layers.push({ id: entry.id, path: entry.path, author: entry.author, ...(entry.created ? { created: entry.created } : {}), file: parsed.layer, ok: parsed.ok });
+    if (!parsed.ok) warnings.push(`layer "${entry.id}" could not be read and was skipped`);
+    else if (parsed.skipped > 0) {
+      warnings.push(`layer "${entry.id}": ${parsed.skipped} operation(s) could not be used and were skipped`);
+      for (const w of parsed.warnings) warnings.push(`layer "${entry.id}": ${w}`);
+    }
+  }
+  const hash = await signingHash(manifest);
+  const rawState = statePath ? readJson(files[statePath]) : null;
+  const state = parseGameState(rawState);
+  const ignoredState = unsupportedStateFields(rawState);
+  if (ignoredState.length) warnings.push(`game-state: ${ignoredState.slice(0, 10).join(', ')}${ignoredState.length > 10 ? ` and ${ignoredState.length - 10} more` : ''} not applied by this player (kept in the file on export)`);
+  const doc = resolve(world, isJson(rawInteractions) ? rawInteractions : null, state, layers, [], hash, warnings);
+  // A world that declares triggers essential must not play with some of its trigger behaviour missing.
+  const unsupported = doc.interactions.unsupported;
+  if (unsupported.length && (manifest.requires ?? []).includes('interaction.trigger')) {
+    const error = new WorldOpenError('This world requires trigger behaviour this player does not support', unsupported.map((m) => `interaction.trigger: ${m}`));
+    error.preview = previewOf(world);
+    throw error;
+  }
+  return doc;
+}
+
+/** The same document with unsaved edits applied on top of its layers: what the editor shows. */
+export function withEdits(doc: WorldDocument, edits: EditOp[]): WorldDocument {
+  return resolve(doc.world, doc.interactionsRaw, doc.initialState, doc.layers, edits, doc.signingHash, []);
+}
+
+function resolve(world: WgifWorld, base: Json | null, state: GameState, layers: LoadedLayer[], edits: EditOp[], hash: string, warnings: string[]): WorldDocument {
+  const { manifest } = world;
+  const resolved = applyEdits(base, [...layers.flatMap((l) => layerOps(l.file)), ...edits], 'layer');
+  const parsed = parseInteractions(resolved.interactions);
+  const cam = parsed.interactions.camera;
+  return {
+    world,
+    signingHash: hash,
+    saveKey: saveKey(manifest.id, hash),
+    interactionsRaw: base,
+    ids: resolved.ids,
+    interactions: parsed.interactions,
+    sceneOps: resolved.sceneOps,
+    layers,
+    spawn: resolved.spawn ?? manifest.spawn ?? (cam.spawn ? { position: cam.spawn, ...(cam.lookAt ? { lookAt: cam.lookAt } : {}) } : null),
+    initialState: state,
+    policy: editPolicy(manifest.mode),
+    warnings: [...warnings, ...resolved.warnings, ...parsed.warnings],
+  };
+}
+
+/**
+ * What the signature badge says, and the sentence under it. A valid signature proves which key
+ * signed the world and that the signed part is unchanged; it does not prove who the creator is
+ * (SPEC §8: no PKI). An invalid one is never shown as a verified origin.
+ */
+export function describeTrust(world: WgifWorld): { label: string; tone: 'valid' | 'invalid' | 'absent'; detail: string } {
+  const { manifest, report } = world;
+  if (report.signature === 'valid') {
+    const key = manifest.signature?.publicKey.slice(0, 12) ?? '';
+    const layered = (manifest.layers?.length ?? 0) > 0 ? ' Layers are not covered by this signature.' : '';
+    return {
+      label: 'signature valid',
+      tone: 'valid',
+      detail: `Unchanged since it was signed with key ${key}…. The key is what is proven, not who "${manifest.creator.name}" is: check the key with the creator.${layered}`,
+    };
+  }
+  if (report.signature === 'invalid') {
+    return { label: 'signature invalid', tone: 'invalid', detail: 'Changed after it was signed, or signed by a different key. Treat its origin as unknown.' };
+  }
+  return {
+    label: manifest.mode === 'locked' ? 'unsigned · unverified' : 'unsigned',
+    tone: 'absent',
+    detail: manifest.mode === 'locked' ? 'Locked by its creator but not signed, so its origin cannot be checked.' : 'No creator signature: anyone could have made or changed this file.',
+  };
+}
+
+/** One sentence on what the creator allows, shown next to the mode badge. */
+export function describeMode(doc: WorldDocument): string {
+  const mode = doc.world.manifest.mode;
+  if (mode === 'locked') return 'Locked: a creator policy, not DRM. This player honours it, so you can explore and play, but not change or export it here.';
+  if (mode === 'layered') return 'Layered: changes are added as layers on top. The original world stays untouched.';
+  return 'Editable: you can change it and export your own copy.';
 }
 
 export interface CameraHints {

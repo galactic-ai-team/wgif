@@ -1,0 +1,11 @@
+{
+  "name": "@wgif/img2world",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "start": "tsx src/cli.ts",
+    "fetch-model": "tsx src/fetch-model.ts"
+  }
+}
