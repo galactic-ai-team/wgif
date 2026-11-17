@@ -83,6 +83,12 @@ export interface AgentWorld {
   release(objectId: string, velocity?: Vec3): boolean;
   /** Puts a loose object, or one this agent carries, straight into the player's hands. */
   giveToPlayer(objectId: string): boolean;
+  /**
+   * The safety net's action: puts the object into the player's hands even if another agent is
+   * carrying it (never if the player holds it). For the built-in ball return, so a slow or stuck
+   * NPC can never keep the ball from the shooter.
+   */
+  returnToPlayer(objectId: string): boolean;
   /** Throws a loose or carried object so that it reaches `target` after `flightSec`. The player catches it on arrival. */
   pass(objectId: string, target: Vec3, flightSec: number): boolean;
   /** Raises a custom event for the HUD and audio layers. */
@@ -95,22 +101,37 @@ export interface AgentWorld {
  *
  * With `patienceSec` 0 it is the whole rebounder for worlds that bring no NPC. When a real
  * rebounder NPC is installed it stays on as a safety net with some patience, so a ball the NPC
- * cannot reach never stalls the game.
+ * cannot reach never stalls the game. With `deadlineSec`, the ball is also back in the shooter's
+ * hands at the latest that long after it left them (shot over, no pass in the air), even if the
+ * NPC is still chasing or carrying it: a Shootout is timed, so a slow NPC must not eat the clock.
  */
 export class BallReturnAgent implements WorldAgent {
   readonly role = 'ball-return';
   private deadSince: number | null = null;
+  private leftHandsAt: number | null = null;
 
-  constructor(readonly patienceSec = 0) {}
+  constructor(readonly patienceSec = 0, readonly deadlineSec: number | null = null) {}
 
   reset(): void {
     this.deadSince = null;
+    this.leftHandsAt = null;
   }
 
   update(world: AgentWorld): void {
     const game = world.minigame;
     const ball = game ? world.object(game.ball) : null;
     const waiting = !!game && !!ball && (game.phase === 'countdown' || game.phase === 'playing') && world.player.canHold;
+    if (this.deadlineSec !== null && waiting) {
+      if (ball.heldBy === 'player') this.leftHandsAt = null;
+      else {
+        this.leftHandsAt ??= world.time;
+        const over = !ball.shot || ball.shot.done;
+        if (over && !ball.incoming && world.time - this.leftHandsAt >= this.deadlineSec && world.returnToPlayer(ball.id)) {
+          this.leftHandsAt = this.deadSince = null;
+          return;
+        }
+      }
+    } else if (!waiting) this.leftHandsAt = null;
     const dead = waiting && ball.heldBy === null && !ball.incoming && (!ball.shot || ball.shot.done);
     if (!dead) {
       // A ball in an NPC's hands is on its way; a ball in the air is not dead yet.

@@ -1,4 +1,4 @@
-import { createRebounder, type RebounderAgent } from './ai.js';
+import { createRebounder, reboundSpot, type RebounderAgent } from './ai.js';
 import { Sfx } from './audio.js';
 import { PlayerControls } from './controls.js';
 import { EditSession, isLayerOp } from './edit.js';
@@ -26,6 +26,8 @@ const byInput = $<HTMLInputElement>('by');
 const perfBox = new URLSearchParams(location.search).has('perf') ? $('perf') : null;
 /** `?npc=onnx` opts into the ONNX clone driving the rebounder (JS MLP, no WASM); the default is the rules model, and the rules twin stays the fallback on any load or evaluation failure. */
 const npcOnnx = new URLSearchParams(location.search).get('npc') === 'onnx';
+/** `?e2e` exposes the open world's runtime to the headless play test (e2e/shootout.e2e.mjs). Read-only use. */
+if (new URLSearchParams(location.search).has('e2e')) Object.assign(window, { __wgif: { get rt() { return viewer?.runtime ?? null; } } });
 
 /** Everything that belongs to the world that is open right now. */
 interface Session {
@@ -214,8 +216,10 @@ async function mount(view: WorldDocument, state: GameState, keepPose = false): P
   const { runtime, built } = await viewer.load(view, state);
   if (session.npc) {
     runtime.setAgent(session.npc);
-    // The built-in ball return stays on as a safety net for balls the NPC cannot get to.
-    if (runtime.shootout) runtime.setAgent(new BallReturnAgent(7));
+    // The built-in ball return stays on as a safety net: a dead ball the NPC leaves alone comes back
+    // after 2 s, and any ball is back in the shooter's hands at most 4 s after a shot (play test
+    // 2026-11-16: returns took up to ~11 s, which ate the 60 s clock).
+    if (runtime.shootout) runtime.setAgent(new BallReturnAgent(2, 4));
   }
   if (pose) {
     runtime.player.feet[0] = pose.feet[0]; runtime.player.feet[1] = pose.feet[1]; runtime.player.feet[2] = pose.feet[2];
@@ -308,6 +312,10 @@ function startShootout(): void {
   if (editing) setEditing(false);
   setMode('walk');
   rt.startShootout();
+  // The rebounder waits under the hoop the shooter now faces: in view, and close to the misses.
+  if (rt.shootoutTarget && session?.npc) session.npc.standBy(reboundSpot(rt.shootoutTarget, rt.player.feet));
+  // Space must reach the game, not re-press the focused ▶ Shootout / ■ Stop button.
+  playBtn.blur();
   syncButtons();
 }
 

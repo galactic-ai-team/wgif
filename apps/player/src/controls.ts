@@ -5,7 +5,8 @@ import type { InputSource } from './viewer.js';
  * First-person input for desktop and touch, turned into one `PlayerInput`.
  *
  * Desktop: click the scene to capture the mouse, WASD or arrows to move, Shift to run, hold the
- * left button (or Space) to charge a shot. If the browser refuses pointer lock, dragging looks around.
+ * left button (or Space) to charge a shot. If the browser refuses pointer lock, holding the button
+ * still charges a shot, and dragging looks around instead (a drag drops the charge, it never shoots).
  * Touch: the left part of the scene is a virtual stick that appears under the thumb, dragging
  * anywhere else looks around, and the on-screen button is the primary action.
  */
@@ -32,6 +33,8 @@ const TOUCH_LOOK = 0.0055;
 const STICK_RADIUS = 56;
 /** Share of the scene's width, from the left, where a touch starts the stick. */
 const STICK_ZONE = 0.45;
+/** An uncaptured mouse press that moves further than this is a drag to look around, not a shot. */
+const DRAG_PX = 10;
 const MOVE_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ShiftLeft', 'ShiftRight', 'Space']);
 
 /**
@@ -47,7 +50,7 @@ const typing = (target: EventTarget | null): boolean => {
 };
 
 export class PlayerControls implements InputSource {
-  readonly input: PlayerInput = { forward: 0, right: 0, run: false, charging: false };
+  readonly input: PlayerInput = { forward: 0, right: 0, run: false, charging: false, cancel: false };
   /** True once the pointer is captured (desktop). */
   locked = false;
   /** True once a touch has been seen, so the UI can show touch hints and buttons. */
@@ -57,6 +60,10 @@ export class PlayerControls implements InputSource {
   private yaw = 0;
   private pitch = 0;
   private mouseDown = false;
+  /** The current charge was dropped (the press became a drag). Latched until the next press, so no frame can see it as a release. */
+  private cancelled = false;
+  /** Where an uncaptured mouse press started, to tell a hold from a drag. */
+  private press: { x: number; y: number } | null = null;
   private actionDown = false;
   private stick: { id: number; x0: number; y0: number; x: number; y: number } | null = null;
   private look: { id: number; x: number; y: number } | null = null;
@@ -64,6 +71,14 @@ export class PlayerControls implements InputSource {
 
   constructor(private readonly canvas: HTMLElement, private readonly ui: TouchElements, private readonly hooks: ControlHooks) {
     const on = { signal: this.abort.signal };
+    // A phone shows its Shoot button from the start, not only after a finger has touched the scene.
+    this.touch = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+    window.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'touch' && !this.touch) {
+        this.touch = true;
+        this.hooks.onLockChange(this.locked);
+      }
+    }, { signal: this.abort.signal, capture: true });
     window.addEventListener('keydown', (e) => this.key(e, true), on);
     window.addEventListener('keyup', (e) => this.key(e, false), on);
     window.addEventListener('blur', () => this.release(), on);
@@ -83,6 +98,9 @@ export class PlayerControls implements InputSource {
     ui.action.addEventListener('pointerdown', (e) => {
       e.preventDefault();
       if (!this.enabled) return;
+      // Keep the finger on the button even if it slides off a little while charging.
+      ui.action.setPointerCapture?.(e.pointerId);
+      this.cancelled = false;
       this.actionDown = true;
       this.refresh();
       this.hooks.onPrimary();
@@ -119,7 +137,7 @@ export class PlayerControls implements InputSource {
   private release(): void {
     this.keys.clear();
     this.mouseDown = this.actionDown = false;
-    this.stick = this.look = null;
+    this.stick = this.look = this.press = null;
     this.ui.stick.hidden = true;
     this.refresh();
   }
@@ -142,6 +160,7 @@ export class PlayerControls implements InputSource {
     this.input.right = this.enabled ? Math.max(-1, Math.min(1, right)) : 0;
     this.input.run = run;
     this.input.charging = this.enabled && (this.mouseDown || this.actionDown || k.has('Space'));
+    this.input.cancel = this.cancelled;
   }
 
   private turn(dx: number, dy: number): void {
@@ -155,6 +174,7 @@ export class PlayerControls implements InputSource {
     if (MOVE_KEYS.has(e.code)) {
       e.preventDefault();
       const fresh = down && !this.keys.has(e.code);
+      if (fresh && e.code === 'Space') this.cancelled = false;
       if (down) this.keys.add(e.code);
       else this.keys.delete(e.code);
       this.refresh();
@@ -181,17 +201,19 @@ export class PlayerControls implements InputSource {
     if (!this.enabled || !(startsOnScene(e.target) || (this.locked && e.pointerType === 'mouse'))) return;
     if (e.pointerType === 'mouse') {
       if (e.button !== 0) return;
-      if (this.locked) {
-        this.mouseDown = true;
-        this.refresh();
-        this.hooks.onPrimary();
-      } else if (typeof this.canvas.requestPointerLock === 'function') {
-        // Some browsers return a promise that rejects when the lock is refused; dragging still looks around.
-        void Promise.resolve(this.canvas.requestPointerLock()).catch(() => undefined);
+      if (!this.locked) {
+        // Ask to capture the mouse. Some browsers return a promise that rejects when the lock is
+        // refused (or refuse silently): then a hold still charges and a drag looks around.
+        if (typeof this.canvas.requestPointerLock === 'function') void Promise.resolve(this.canvas.requestPointerLock()).catch(() => undefined);
         this.look = { id: e.pointerId, x: e.clientX, y: e.clientY };
-      } else {
-        this.look = { id: e.pointerId, x: e.clientX, y: e.clientY };
+        this.press = { x: e.clientX, y: e.clientY };
       }
+      // A press charges a shot either way. A quick click (the one that captures the mouse) is a tap
+      // the game ignores (MIN_HOLD_SEC), so capturing never throws the ball away.
+      this.cancelled = false;
+      this.mouseDown = true;
+      this.refresh();
+      this.hooks.onPrimary();
       return;
     }
     e.preventDefault();
@@ -218,6 +240,13 @@ export class PlayerControls implements InputSource {
       this.stick.y = e.clientY;
       this.refresh();
     } else if (this.look?.id === e.pointerId && !this.locked) {
+      if (this.press && this.mouseDown && Math.hypot(e.clientX - this.press.x, e.clientY - this.press.y) > DRAG_PX) {
+        // The hold became a drag: it looks around, and the charge is dropped without a shot.
+        this.mouseDown = false;
+        this.cancelled = true;
+        this.press = null;
+        this.refresh();
+      }
       const k = e.pointerType === 'mouse' ? MOUSE_LOOK : TOUCH_LOOK;
       this.turn((e.clientX - this.look.x) * k, (e.clientY - this.look.y) * k);
       this.look.x = e.clientX;
@@ -232,5 +261,12 @@ export class PlayerControls implements InputSource {
       this.refresh();
     }
     if (this.look?.id === e.pointerId) this.look = null;
+    if (e.pointerType === 'mouse') {
+      this.press = null;
+      if (this.mouseDown) {
+        this.mouseDown = false;
+        this.refresh();
+      }
+    }
   }
 }

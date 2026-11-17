@@ -25,6 +25,8 @@ const DEFAULT_PICKUP_RADIUS = 0.45;
 const PICKUP_SLACK = 0.35;
 /** If the model carries the ball this long without passing, the ball is handed over anyway. */
 const CARRY_TIMEOUT_SEC = 8;
+/** Walking speed back to the stand-by post between rebounds. */
+const POST_SPEED = 2.5;
 const IDLE: NpcAction = { state: 'idle', velocity: [0, 0, 0], passBall: false, holdingBall: false, target: null };
 
 export interface NpcInfo {
@@ -49,6 +51,8 @@ export class RebounderAgent implements WorldAgent {
   private clock = 0;
   /** Where the ball was left for a player who could not take it. The NPC leaves it alone while it stays there. */
   private parked: Vec3 | null = null;
+  /** Shootout stand-by post (see standBy). While set, "idle" means waiting here instead of the model's home. */
+  private post: Vec3 | null = null;
 
   constructor(private readonly hook: NpcHook, private readonly home: Vec3, private readonly pickupRadius = DEFAULT_PICKUP_RADIUS) {
     this.body = { position: [home[0], home[1], home[2]], heading: Math.PI, radius: 0.3, height: 1.75, color: COLOR };
@@ -71,7 +75,20 @@ export class RebounderAgent implements WorldAgent {
     this.carriedFor = 0;
     this.clock = 0;
     this.parked = null;
+    this.post = null;
     this.body.position[0] = this.home[0]; this.body.position[1] = this.home[1]; this.body.position[2] = this.home[2];
+  }
+
+  /**
+   * Puts the NPC at a spot, for example under the hoop the shooter faces at tip-off, so it is in
+   * view and close to where misses land, and makes that spot where it waits between rebounds for
+   * the rest of the Shootout (instead of walking back to the model's centre-court home). The model
+   * still decides when to chase, pick up, carry and pass.
+   */
+  standBy(spot: Vec3): void {
+    if (!Number.isFinite(spot[0] + spot[1] + spot[2])) return;
+    this.post = [spot[0], spot[1], spot[2]];
+    this.body.position[0] = spot[0]; this.body.position[1] = spot[1]; this.body.position[2] = spot[2];
   }
 
   /** Resolves when no model step is in flight. Tests and replays wait on this between ticks. */
@@ -97,8 +114,16 @@ export class RebounderAgent implements WorldAgent {
     else this.carriedFor = 0;
     if (mine && ((stepped && this.action.passBall) || this.carriedFor > CARRY_TIMEOUT_SEC)) this.handOver(world, ball);
 
-    // 2. Walk, staying inside the play area.
-    const [vx, , vz] = this.failed ? IDLE.velocity : this.action.velocity;
+    // 2. Walk, staying inside the play area. During a Shootout an idle NPC waits at its post.
+    const phase = world.minigame?.phase;
+    if (this.post && (phase === 'idle' || phase === 'over')) this.post = null;
+    let [vx, , vz] = this.failed ? IDLE.velocity : this.action.velocity;
+    if (this.post && !this.failed && this.hook.state === 'idle') {
+      const dx = this.post[0] - pos[0], dz = this.post[2] - pos[2], d = Math.hypot(dx, dz);
+      const v = d > 0.05 ? Math.min(POST_SPEED, d / dt) / d : 0;
+      vx = dx * v;
+      vz = dz * v;
+    }
     const b = world.bounds;
     pos[0] = b ? clamp(pos[0] + vx * dt, b.min[0], b.max[0]) : pos[0] + vx * dt;
     pos[2] = b ? clamp(pos[2] + vz * dt, b.min[2], b.max[2]) : pos[2] + vz * dt;
@@ -193,4 +218,15 @@ export async function createRebounder(world: WgifWorld, opts: { preferOnnx?: boo
     }
   }
   return new RebounderAgent(hook, home, pickup);
+}
+
+/**
+ * Where the rebounder waits during a Shootout: on the floor 1.5 m in front of the rim towards the
+ * shooter and 0.8 m to one side, so it is in view under the hoop without standing in the line of the shot.
+ */
+export function reboundSpot(rim: Vec3, shooterFeet: Vec3): Vec3 {
+  let dx = shooterFeet[0] - rim[0], dz = shooterFeet[2] - rim[2];
+  const len = Math.hypot(dx, dz) || 1;
+  dx /= len; dz /= len;
+  return [rim[0] + dx * 1.5 - dz * 0.8, shooterFeet[1], rim[2] + dz * 1.5 + dx * 0.8];
 }

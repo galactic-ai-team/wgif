@@ -98,7 +98,8 @@ sw.addEventListener('fetch', (event) => {
           (hit) =>
             hit ??
             fetch(request).then((response) => {
-              void cache.put(request, response.clone());
+              // Clone before handing the response to the page, which consumes its body.
+              if (response.ok) void cache.put(request, response.clone()).catch(() => undefined);
               return response;
             }),
         ),
@@ -112,7 +113,10 @@ sw.addEventListener('fetch', (event) => {
     fetch(request)
       .then((response) => {
         if (response.ok) {
-          void caches.open(CACHE_NAME).then((cache) => cache.put(request, response.clone()));
+          // Clone now, synchronously. Cloning later, inside caches.open().then(), raced the page
+          // reading the body: "Failed to execute 'clone' on 'Response': Response body is already used".
+          const copy = response.clone();
+          void caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)).catch(() => undefined);
         }
         return response;
       })
