@@ -6,7 +6,10 @@ import {
   ModelSignatureError,
   observationToFeatures,
   ONNX_DEAD_ZONE_MS,
+  ONNX_DIST_TO_BALL_IDX,
   ONNX_MAX_SPEED,
+  ONNX_OUT_OF_BOUNDS_IDX,
+  ONNX_PICKUP_RADIUS_M,
 } from './features.js';
 import { validateObservation } from './rules.js';
 
@@ -196,6 +199,15 @@ const clamp = (v: number, lo: number, hi: number): number => Math.min(Math.max(v
  * action shaping as the ONNX Runtime path (src/onnx.ts), so the two
  * evaluators agree on every observation. Stateless — the held flags in the
  * observation carry the state.
+ *
+ * One thing the network does NOT output is the pickup decision: its action
+ * is [vx, vz, pass_logit], so `holdingBall` is derived here. It is true
+ * while the ball is already held, and it is asserted when the loose ball is
+ * within the pickup radius — that is the model's pickup decision, mirroring
+ * the rules model's `ball_near` (pickupRadius), and the player adapter's
+ * reach check is the second gate. Without the proximity term the NPC would
+ * walk to the ball and stand on it forever: `holdingBall` would only ever
+ * become true after a pickup the adapter never performs.
  */
 export class JsMlpNpc implements NpcModel {
   readonly id: string;
@@ -204,25 +216,30 @@ export class JsMlpNpc implements NpcModel {
   private weights: Weights;
   private home: Vec3;
   private bounds: typeof DEFAULT_COURT_BOUNDS;
+  private pickupRadius: number;
+  /** Display-only state, from the last action computed (starts 'onnx'). */
+  private lastState = 'onnx';
 
-  private constructor(descriptor: ModelEntry, weights: Weights, home: Vec3, bounds: typeof DEFAULT_COURT_BOUNDS) {
+  private constructor(descriptor: ModelEntry, weights: Weights, home: Vec3, bounds = DEFAULT_COURT_BOUNDS, pickupRadius = ONNX_PICKUP_RADIUS_M) {
     this.descriptor = descriptor;
     this.id = descriptor.id;
     this.weights = weights;
     this.home = home;
     this.bounds = bounds;
+    this.pickupRadius = pickupRadius;
   }
 
-  /** Display-only state, derived from the observation (the MLP itself is stateless). */
+  /** Display-only state, from the last action (`chase` / `carry` / `pass`). */
   get state(): string {
-    return 'onnx';
+    return this.lastState;
   }
 
   reset(): void {
-    // Stateless: nothing to reset. Kept for the NpcModel interface.
+    // Stateless: nothing to reset, except the display state.
+    this.lastState = 'onnx';
   }
 
-  static async load(descriptor: ModelEntry, bytes: Uint8Array, home: Vec3 = DEFAULT_HOME, bounds = DEFAULT_COURT_BOUNDS): Promise<JsMlpNpc> {
+  static async load(descriptor: ModelEntry, bytes: Uint8Array, home: Vec3 = DEFAULT_HOME, bounds = DEFAULT_COURT_BOUNDS, pickupRadius = ONNX_PICKUP_RADIUS_M): Promise<JsMlpNpc> {
     if (descriptor.runtime !== 'onnx') {
       throw new JsMlpError(`model "${descriptor.id}" is not an onnx model (runtime is "${descriptor.runtime}")`);
     }
@@ -238,7 +255,7 @@ export class JsMlpNpc implements NpcModel {
     } catch (e) {
       throw new JsMlpError(`could not read onnx weights for "${descriptor.id}": ${(e as Error).message}`);
     }
-    return new JsMlpNpc(descriptor, weights, home, bounds);
+    return new JsMlpNpc(descriptor, weights, home, bounds, pickupRadius);
   }
 
   async update(obs: NpcObservation, dt: number): Promise<NpcAction> {
@@ -253,8 +270,15 @@ export class JsMlpNpc implements NpcModel {
     const vx = clamp(Number(out[0]), -ONNX_MAX_SPEED, ONNX_MAX_SPEED);
     const vz = clamp(Number(out[1]), -ONNX_MAX_SPEED, ONNX_MAX_SPEED);
     const passBall = Number(out[2]) > 0.5;
-    const holdingBall = obs.ball.heldBy === 'rebounder';
+    // The pickup decision: already holding it, or the loose ball is within
+    // reach on the court. Out-of-bounds balls are never picked up — the rules
+    // model gives up on those by design, and the network was trained on that
+    // policy, so the proximity term must not override it.
+    const holdingBall =
+      obs.ball.heldBy === 'rebounder' ||
+      (obs.ball.heldBy === null && Number(x[ONNX_OUT_OF_BOUNDS_IDX]) === 0 && Number(x[ONNX_DIST_TO_BALL_IDX]) <= this.pickupRadius);
     const state = passBall ? 'pass' : holdingBall ? 'carry' : 'chase';
+    this.lastState = state;
     const target = holdingBall ? obs.player.position : obs.ball.position;
     const speed = Math.hypot(vx, vz);
     const velocity: Vec3 = speed < ONNX_DEAD_ZONE_MS ? [0, 0, 0] : [vx, 0, vz];

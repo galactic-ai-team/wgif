@@ -7,8 +7,11 @@ import {
   createNpcHookFromModel,
   DEFAULT_COURT_BOUNDS,
   DEFAULT_HOME,
+  loadDeclaredRulesFallback,
+  loadRulesModel,
   MAX_STEPS_PER_TICK,
   type BallObservation,
+  type LoadedModel,
   type NpcAction,
   type NpcModel,
   type NpcObservation,
@@ -253,6 +256,41 @@ describe('per-tick npc hook', () => {
     expect(hook.lastAction?.state).toBe('chase');
   });
 
+  it('swaps a failing onnx model to the rules twin and keeps stepping', async () => {
+    const throwing: NpcModel = {
+      id: 'throwing-onnx',
+      runtime: 'onnx',
+      state: 'idle',
+      descriptor: onnxDescriptor,
+      async update(): Promise<NpcAction> {
+        throw new Error('onnx eval exploded');
+      },
+      reset() {},
+    };
+    const fallback: LoadedModel = {
+      model: loadRulesModel(rulesDescriptor, rulesBytes),
+      runtime: 'rules',
+      usedFallback: true,
+      tickHz: 10,
+      warnings: [],
+    };
+    const hook = createNpcHookFromModel(throwing, 10, { runtime: 'onnx' }, { loadFallback: async () => fallback });
+    expect(hook.runtime).toBe('onnx');
+    expect(hook.usedFallback).toBe(false);
+    const result = await hook.tick(0.1, obs());
+    expect(result.stepped).toBe(true);
+    expect(result.step).toBe(1);
+    expect(result.action.state).toBe('chase');
+    expect(hook.runtime).toBe('rules');
+    expect(hook.usedFallback).toBe(true);
+    expect(hook.warnings.join(' ')).toMatch(/failed during evaluation/);
+    // The swap sticks: the next step runs on rules, with no second swap.
+    const next = await hook.tick(0.1, obs());
+    expect(next.stepped).toBe(true);
+    expect(next.step).toBe(2);
+    expect(hook.runtime).toBe('rules');
+  });
+
   it('reset clears the accumulator and the last action and resets the model', async () => {
     const model = new RecordingModel();
     const hook = createNpcHookFromModel(model, 10);
@@ -324,6 +362,31 @@ describe('createNpcHook from a world', () => {
     const result = await hook.tick(0.1, obs());
     expect(result.stepped).toBe(true);
     expect(result.action.state).toBe('chase');
+  });
+
+  it('loads the onnx model first on a rules-first world when preferred', async () => {
+    const { manifest, files } = worldFiles([rulesDescriptor, onnxDescriptor]);
+    const hook = await createNpcHook(await unpackWgif(await packWgif(manifest, files)), 'rebounder', { preferRuntime: 'onnx' });
+    expect(hook.runtime).toBe('onnx');
+    expect(hook.usedFallback).toBe(false);
+    const result = await hook.tick(0.1, obs());
+    expect(result.stepped).toBe(true);
+    expect(result.action.state).toBe('chase');
+  });
+
+  it('selects the declared rules twin rather than the first same-purpose rules model', async () => {
+    const other: ModelEntry = { ...rulesDescriptor, id: 'other-rules', path: 'models/other.rules.json', tickHz: 20 };
+    const { manifest, files } = worldFiles([other, onnxDescriptor, rulesDescriptor], {
+      'models/other.rules.json': rulesBytes,
+    });
+    const world = await unpackWgif(await packWgif(manifest, files));
+    expect(world.report.ok).toBe(true);
+    const fallback = loadDeclaredRulesFallback(world, onnxDescriptor);
+    expect(fallback.model.id).toBe('rebounder-rules');
+    expect(fallback.tickHz).toBe(10);
+    expect(fallback.usedFallback).toBe(true);
+    const hook = await createNpcHook(world, 'rebounder', { preferRuntime: 'onnx' });
+    expect(hook.runtime).toBe('onnx');
   });
 
   it('falls back to the rules twin through the hook when the onnx file is corrupt', async () => {

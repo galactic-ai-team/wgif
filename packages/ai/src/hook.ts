@@ -1,6 +1,6 @@
 import type { WgifWorld } from '@wgif/format';
 import type { NpcAction, NpcModel, NpcObservation } from './types.js';
-import { loadModelFromWorld } from './loader.js';
+import { loadDeclaredRulesFallback, loadModelFromWorld, type LoadedModel } from './loader.js';
 
 /**
  * The per-tick NPC hook: the thing the player calls every animation frame.
@@ -10,13 +10,16 @@ import { loadModelFromWorld } from './loader.js';
  * it is purpose-generic — `createNpcHook(world, purpose)` loads whatever the
  * manifest lists first for that purpose.
  *
- * Selection is rules-first by manifest order: the loader tries descriptors in
- * manifest order, and an ONNX model runs through the hand-rolled JS MLP
- * evaluator (no WASM, no onnxruntime-web). An ONNX model that cannot load
- * falls back to its declared same-purpose rules twin, and the hook reports
- * that in `usedFallback`. The hook never claims general `runtime.onnx`
- * support — the JS MLP is an optional optimization for small MLPs, not a
- * general ONNX runtime (see docs/CAPABILITIES.md).
+ * Selection is manifest order by default, or the preferred runtime first
+ * when the caller asks (`preferRuntime: 'onnx'`): the loader tries
+ * descriptors in that order, and an ONNX model runs through the hand-rolled
+ * JS MLP evaluator (no WASM, no onnxruntime-web). An ONNX model that cannot
+ * load falls back to its declared same-purpose rules twin, and the hook
+ * reports that in `usedFallback` — and if the running ONNX model fails
+ * mid-game, the hook swaps to the rules twin and keeps stepping instead of
+ * dying: rules are the terminal fallback. The hook never claims general
+ * `runtime.onnx` support — the JS MLP is an optional optimization for small
+ * MLPs, not a general ONNX runtime (see docs/CAPABILITIES.md).
  *
  * Lifecycle: movement velocity is persistent (the player integrates the last
  * action's velocity every frame), but gameplay events are one-shot — they
@@ -56,8 +59,10 @@ export interface NpcHook {
    * action plus whether a step was committed (`stepped`) and the step
    * sequence number (`step`), so the caller can tell a fresh gameplay event
    * from a repeated stale action. Steps within one call share the frame's
-   * observation. A rejected model step propagates to the caller (the hook
-   * stays usable; the caller decides whether to disable the NPC).
+   * observation. A rejected model step from a rules model propagates to the
+   * caller (the hook stays usable; the caller decides whether to disable the
+   * NPC); a rejected step from an ONNX model swaps to the rules fallback and
+   * retries once, so only a failing rules model ever reaches the caller.
    */
   tick(dt: number, obs: NpcObservation): Promise<TickResult>;
   /** Clears the accumulator and the last action, restarts the step sequence, and resets the model. A model step pending at reset time resolves into nothing. */
@@ -75,18 +80,33 @@ export interface NpcHookMeta {
   warnings: readonly string[];
 }
 
+export interface NpcHookOptions {
+  /**
+   * Loads the fallback model when the running model fails mid-game. Wired by
+   * `createNpcHook` to the world's rules twin; only ever used when the
+   * running model is ONNX — rules are the terminal fallback, so a failing
+   * rules model still propagates to the caller.
+   */
+  loadFallback?: () => Promise<LoadedModel>;
+}
+
 /**
  * Builds a hook around an already-loaded model. Used by `createNpcHook` and
  * directly by tests with a recording model to assert step timing.
  */
-export function createNpcHookFromModel(model: NpcModel, tickHz: number, meta?: Partial<NpcHookMeta>): NpcHook {
+export function createNpcHookFromModel(model: NpcModel, tickHz: number, meta?: Partial<NpcHookMeta>, opts: NpcHookOptions = {}): NpcHook {
   if (!Number.isFinite(tickHz) || tickHz <= 0) {
     throw new Error(`tickHz must be a positive finite number, got ${tickHz}`);
   }
-  const runtime = meta?.runtime ?? model.runtime;
-  const usedFallback = meta?.usedFallback ?? false;
-  const warnings = meta?.warnings ?? [];
-  const tickDt = 1 / tickHz;
+  // The running model can change exactly once: an ONNX model that fails
+  // mid-game swaps to its rules twin and stays there (the failed model is
+  // not retried, and reset() does not bring it back).
+  let current = model;
+  let runtime = meta?.runtime ?? model.runtime;
+  let usedFallback = meta?.usedFallback ?? false;
+  let currentTickHz = tickHz;
+  let tickDt = 1 / tickHz;
+  const warnings: string[] = [...(meta?.warnings ?? [])];
   let acc = 0;
   let inFlight = false;
   let lastAction: NpcAction | null = null;
@@ -99,20 +119,52 @@ export function createNpcHookFromModel(model: NpcModel, tickHz: number, meta?: P
   let disposedFlag = false;
 
   const idleAction = (obs: NpcObservation): NpcAction => ({
-    state: model.state,
+    state: current.state,
     velocity: [0, 0, 0],
     passBall: false,
     holdingBall: false,
     target: obs.ball.position,
   });
 
+  /**
+   * One model step, with the ONNX → rules swap. Returns null when a
+   * reset/dispose landed mid-swap, so the stale result is never committed.
+   */
+  const stepOnce = async (obs: NpcObservation, gen: number): Promise<NpcAction | null> => {
+    try {
+      return await current.update(obs, tickDt);
+    } catch (error) {
+      if (current.runtime !== 'onnx' || !opts.loadFallback) throw error;
+      const fallback = await opts.loadFallback();
+      if (gen !== generation) return null;
+      warnings.push(
+        `onnx model "${current.id}" failed during evaluation (${(error as Error).message}); using fallback rules model "${fallback.model.id}"`,
+        ...fallback.warnings,
+      );
+      current = fallback.model;
+      runtime = fallback.runtime;
+      usedFallback = true;
+      currentTickHz = fallback.tickHz;
+      tickDt = 1 / fallback.tickHz;
+      return current.update(obs, tickDt);
+    }
+  };
+
   return {
-    runtime,
-    usedFallback,
-    tickHz,
-    warnings,
+    get runtime(): 'rules' | 'onnx' {
+      return runtime;
+    },
+    get usedFallback(): boolean {
+      return usedFallback;
+    },
+    get tickHz(): number {
+      return currentTickHz;
+    },
+    get warnings(): readonly string[] {
+      return warnings;
+    },
     get state(): string {
-      return model.state;
+      return current.state;
     },
     get lastAction(): NpcAction | null {
       return lastAction;
@@ -141,10 +193,10 @@ export function createNpcHookFromModel(model: NpcModel, tickHz: number, meta?: P
         const gen = generation;
         inFlight = true;
         try {
-          const action = await model.update(obs, tickDt);
+          const action = await stepOnce(obs, gen);
           // The hook was reset or disposed while this step was pending: the
           // result is stale, so it is discarded, not committed.
-          if (gen === generation) {
+          if (action !== null && gen === generation) {
             lastAction = action;
             stepCount++;
             committed++;
@@ -163,7 +215,7 @@ export function createNpcHookFromModel(model: NpcModel, tickHz: number, meta?: P
       acc = 0;
       lastAction = null;
       stepCount = 0;
-      model.reset();
+      current.reset();
     },
     dispose(): void {
       generation++;
@@ -173,11 +225,13 @@ export function createNpcHookFromModel(model: NpcModel, tickHz: number, meta?: P
 }
 
 /** Loads the best model for a purpose and wraps it in a per-tick hook. */
-export async function createNpcHook(world: WgifWorld, purpose = 'rebounder'): Promise<NpcHook> {
-  const loaded = await loadModelFromWorld(world, purpose);
+export async function createNpcHook(world: WgifWorld, purpose = 'rebounder', opts: { preferRuntime?: 'rules' | 'onnx' } = {}): Promise<NpcHook> {
+  const loaded = await loadModelFromWorld(world, purpose, opts);
   return createNpcHookFromModel(loaded.model, loaded.tickHz, {
     runtime: loaded.runtime,
     usedFallback: loaded.usedFallback,
     warnings: loaded.warnings,
-  });
+  }, loaded.runtime === 'onnx' && loaded.model.descriptor.fallback
+    ? { loadFallback: async () => loadDeclaredRulesFallback(world, loaded.model.descriptor) }
+    : undefined);
 }
