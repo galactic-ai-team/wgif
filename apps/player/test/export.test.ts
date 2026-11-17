@@ -194,6 +194,39 @@ describe('export: embedded models', () => {
     expect(out.manifest.models).toEqual(before.manifest.models);
     expect(await createRebounder(out)).not.toBeNull();
   });
+
+  it('keeps the rebounder models byte-for-byte when an editable export refreshes the preview, through the Share/Save-to-Files round-trip', async () => {
+    const { doc } = await open();
+    const before = doc.world;
+    // The fresh preview is the one new mutation this branch makes to an
+    // export: preview.png is replaced in the files map and files[] is
+    // rebuilt from it. The models/ entries must come through that rebuild
+    // untouched — the tests above export without a preview, so they would
+    // not catch a preview refresh that dropped them.
+    const preview = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+    const result = await exportWorld(doc, { ops: [{ op: 'move', id: 'ball', position: [1, 0.12, 1] }], at: AT, preview: new Uint8Array(preview) });
+    expect(result.preview).toBe('refreshed');
+    // Share / Save to Files hands the whole file over as one blob, and the
+    // picker on the other device hands the same bytes back. Every open path
+    // in the player (picker, launchQueue, share target, ?src=) funnels those
+    // bytes into openBytes, so re-opening them here is the shared path.
+    const file = new File([result.bytes as Uint8Array<ArrayBuffer>], result.fileName, { type: '' });
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const out = await openWorld(bytes);
+    expect(out.report.ok).toBe(true);
+    expect(out.files['preview.png']).toEqual(new Uint8Array(preview));
+    for (const path of ['models/rebounder-mlp.onnx', 'models/rebounder.rules.json']) {
+      expect(out.files[path], path).toEqual(before.files[path]);
+      expect(out.manifest.files.find((f) => f.path === path)).toEqual(before.manifest.files.find((f) => f.path === path));
+    }
+    expect(out.manifest.models).toEqual(before.manifest.models);
+    // And the rebounder still runs from the re-opened file alone: the models
+    // are data in the file, loaded by the JS MLP from bytes, so no network
+    // is involved and it works offline.
+    const npc = await createRebounder(out);
+    expect(npc).not.toBeNull();
+    expect(npc!.info.runtime).toBe('rules');
+  });
 });
 
 describe('export: locked world', () => {
