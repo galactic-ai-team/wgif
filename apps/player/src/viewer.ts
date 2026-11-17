@@ -51,6 +51,13 @@ interface Ride {
   size: THREE.Vector3;
 }
 
+/** Something a world brings that the viewer draws every frame (an audio visual). */
+export interface FrameExtra {
+  /** Advances it; returns true while it needs frames drawn. */
+  update(dt: number): boolean;
+  dispose(): void;
+}
+
 interface Flash {
   material: THREE.MeshStandardMaterial;
   base: THREE.Color;
@@ -96,6 +103,7 @@ export class WorldViewer {
   /** Driver controls, read every frame in drive mode (see DriveControls). */
   driveSource: { readonly drive: DriveInput } | null = null;
   private flashes: Flash[] = [];
+  private extras: FrameExtra[] = [];
   private overview = { position: new THREE.Vector3(0, 4.7, 14), target: new THREE.Vector3(0, 1, 0) };
   /** What the overview frames (side it is seen from, width across), so a snapshot can frame it for its own shape. */
   private framing = { side: new THREE.Vector3(0, 0, 1), width: 10 };
@@ -248,7 +256,7 @@ export class WorldViewer {
       if (vehicle) this.bindVehicle(vehicle, def, group);
     }
     // PERF.md fix #1: what never moves becomes a few draw calls. Objects and the props that light up keep their own nodes.
-    const keep = new Set<string>([...doc.interactions.objects.map((o) => o.node ?? o.id), ...made.built.props]);
+    const keep = new Set<string>([...doc.interactions.objects.map((o) => o.node ?? o.id), ...made.built.props, ...doc.interactions.audio.flatMap((a) => a.react.map((r) => r.node))]);
     // A world's own sky (extras.wgif.role "sky") stays out of the overview framing and the shadow box.
     const box = sceneBounds(group);
     this.merged = mergeStatic(group, (o) => keep.has(nodeName(o)) || isSky(o));
@@ -291,6 +299,16 @@ export class WorldViewer {
       this.focusVehicle(ride, carSide);
       this.orbit.minDistance = Math.max(2, ride.size.z * 0.6);
     }
+    // A world with a music visualizer (and no vehicle) is about the visualizer: the overview frames it.
+    const vis = ride ? null : doc.interactions.audio.find((a) => a.visualizer)?.visualizer;
+    if (vis) {
+      const w = vis.radius * 2.7, at = new THREE.Vector3(vis.center[0], Math.max(box.min.y + 0.5, vis.center[1] - 0.6), vis.center[2]);
+      // From outside the ring: the formula fits its width, the floor keeps the near bars from filling a wide screen.
+      const r = Math.max(vis.radius * 2.3, (w / 2 / (Math.tan(THREE.MathUtils.degToRad(35)) * Math.min(aspect, 1.6))) * 0.9);
+      this.framing = { side: side.clone(), width: w };
+      this.overview.target.copy(at);
+      this.overview.position.copy(at).addScaledVector(side, Math.cos(tilt) * r).add(new THREE.Vector3(0, Math.sin(tilt) * r, 0));
+    }
     if (this.mode === 'drive' && !made.runtime.drive()) this.mode = 'orbit';
     this.orbit.enabled = this.mode === 'orbit';
     made.runtime.playerEnabled = this.mode === 'walk';
@@ -306,6 +324,24 @@ export class WorldViewer {
     this.orbit.target.copy(this.overview.target);
     this.camera.lookAt(this.orbit.target);
     this.orbit.update();
+    this.invalidate();
+  }
+
+  /** The open world's scene graph (null when none is open). */
+  get worldRoot(): THREE.Group | null {
+    return this.world;
+  }
+
+  /** Adds a per-frame extra for the open world; it is disposed when the world closes. */
+  attach(extra: FrameExtra): void {
+    this.extras.push(extra);
+    this.invalidate();
+  }
+
+  /** Slow automatic orbit in orbit view (OrbitControls autoRotateSpeed: 2 = one turn in 30 s), 0 = off. */
+  setAutoRotate(speed: number): void {
+    this.orbit.autoRotate = speed !== 0;
+    this.orbit.autoRotateSpeed = speed;
     this.invalidate();
   }
 
@@ -390,6 +426,9 @@ export class WorldViewer {
   }
 
   private unload(): void {
+    for (const extra of this.extras) extra.dispose();
+    this.extras = [];
+    this.setAutoRotate(0);
     for (const flash of this.flashes) flash.material.dispose();
     this.flashes = [];
     this.dynamics = [];
@@ -575,6 +614,7 @@ export class WorldViewer {
     }
     if (this.mode === 'orbit' && this.orbit.update()) active = true;
     if (this.animateFlashes(dt)) active = true;
+    for (const extra of this.extras) if (extra.update(dt)) active = true;
     // Idle render: a walker standing still in a still world costs no frames, just like orbit view.
     this.camera.updateMatrixWorld();
     if (!sameMatrix(this.lastView, this.camera.matrixWorld.elements)) active = true;

@@ -368,6 +368,11 @@ export interface PlayerReport {
   deferred: DistFile[];
   /** Total gzip of `.wasm` / `.onnx` files. */
   wasmGzip: number;
+  /**
+   * Bytes of bundled sample worlds (`.wgif`, e.g. `samples/*.wgif`). They are content, not the
+   * player, and each one is held to the per-world budgets, so they are not in `totalGzip`.
+   */
+  worldsBytes: number;
   totalGzip: number;
   manifestFound: boolean;
 }
@@ -469,7 +474,8 @@ export function measurePlayer(distDir: string): PlayerReport | null {
   }
 
   const wasmFiles = files.filter((f) => /\.(wasm|onnx)$/i.test(f.rel));
-  const codeFiles = files.filter((f) => !/\.(wasm|onnx)$/i.test(f.rel));
+  const worldFiles = files.filter((f) => /\.wgif$/i.test(f.rel));
+  const codeFiles = files.filter((f) => !/\.(wasm|onnx|wgif)$/i.test(f.rel));
 
   return {
     distDir,
@@ -480,6 +486,7 @@ export function measurePlayer(distDir: string): PlayerReport | null {
     jsInitialGzip: initial.reduce((a, f) => a + f.gzip, 0),
     jsDeferredGzip: deferred.reduce((a, f) => a + f.gzip, 0),
     wasmGzip: wasmFiles.reduce((a, f) => a + f.gzip, 0),
+    worldsBytes: worldFiles.reduce((a, f) => a + f.bytes, 0),
     totalGzip: codeFiles.reduce((a, f) => a + f.gzip, 0),
     manifestFound: manifest !== null,
   };
@@ -908,7 +915,8 @@ export function renderMarkdown(
     );
     L.push("");
     L.push(
-      `Total dist (gzip, excl. .map and runtime WASM): **${formatBytes(p.totalGzip)}** / ${formatBytes(budgets.playerDistGzipBytes)} — ${status(p.totalGzip, budgets.playerDistGzipBytes)}`,
+      `Total dist (gzip, excl. .map, runtime WASM and sample .wgif worlds): **${formatBytes(p.totalGzip)}** / ${formatBytes(budgets.playerDistGzipBytes)} — ${status(p.totalGzip, budgets.playerDistGzipBytes)}` +
+        (p.worldsBytes ? ` · sample worlds ${formatBytes(p.worldsBytes)} (each held to the world budgets)` : ""),
     );
     if (!p.manifestFound) {
       L.push("");
@@ -1108,7 +1116,8 @@ export function main(argv: string[], cwd: string): number {
         `player JS: initial ${formatBytes(p.jsInitialGzip)} / ${formatBytes(budgets.playerInitialJsGzipBytes)}` +
           `  ·  deferred ${formatBytes(p.jsDeferredGzip)} in ${p.deferred.length} chunk(s)` +
           `  ·  wasm ${formatBytes(p.wasmGzip)} / ${formatBytes(budgets.playerRuntimeWasmGzipBytes)}` +
-          `  ·  dist ${formatBytes(p.totalGzip)} gzip`,
+          `  ·  dist ${formatBytes(p.totalGzip)} gzip` +
+          (p.worldsBytes ? ` (+ ${formatBytes(p.worldsBytes)} of sample worlds, budgeted per world)` : ""),
       );
     }
     if (report.render) {

@@ -1,4 +1,4 @@
-# Credits for the images in examples/worlds/assets
+# Credits for the images and audio in examples/worlds/assets
 
 | File | Work | Author | Source | Licence |
 | --- | --- | --- | --- | --- |
@@ -9,6 +9,7 @@
 | art-birth-of-venus.jpg | The Birth of Venus (c. 1485) | Sandro Botticelli | https://commons.wikimedia.org/wiki/File:Sandro_Botticelli_-_La_nascita_di_Venere_-_Google_Art_Project_-_edited.jpg | Public domain |
 | art-the-kiss.jpg | The Kiss (1907–1908) | Gustav Klimt | https://commons.wikimedia.org/wiki/File:The_Kiss_-_Gustav_Klimt_-_Google_Cultural_Institute.jpg | Public domain |
 | sky-rooftop-night.jpg | Rooftop Night (360° HDRI, tonemapped JPG) | Greg Zaal | https://polyhaven.com/a/rooftop_night | CC0 1.0 |
+| music-neon-pulse.mp3 | Neon Pulse (124 BPM loop, 46.45 s, MP3 40 kbps mono) | Galactic AI Team | made by scripts/synth-track.py | CC0 1.0 |
 | previews/*.png | Renders of the sample worlds | Galactic AI Team | made by scripts/capture-previews.mjs | CC-BY-4.0 |
 
 All images were downsized by `scripts/prepare-assets.py` (paintings to 512 px on the long side,

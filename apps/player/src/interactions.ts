@@ -98,6 +98,40 @@ export interface VehicleDef {
   camera: { distance: number; height: number };
 }
 
+/** Which part of the spectrum a reactive node follows. */
+export type AudioBand = 'bass' | 'mid' | 'treble' | 'energy';
+export const AUDIO_BANDS: readonly AudioBand[] = ['bass', 'mid', 'treble', 'energy'];
+
+/** A scene node that moves or glows with the music. */
+export interface AudioReact {
+  node: string;
+  band: AudioBand;
+  /** Scale factor at silence and at full level (applied on `axis`, or uniformly for "all"). */
+  scale: [number, number] | null;
+  axis: 'x' | 'y' | 'z' | 'all';
+  /** Extra emissive intensity at full level (0 = none). */
+  glow: number;
+}
+
+/**
+ * A music track packed in the world, with an optional audio-reactive visual: an
+ * `interactions[]` entry with `"type": "audio"` (see docs/notes/audio-component.md).
+ */
+export interface AudioDef {
+  id: string;
+  /** Path of the audio payload inside the .wgif (e.g. assets/track.mp3). */
+  file: string;
+  title: string | null;
+  artist: string | null;
+  loop: boolean;
+  /** Musical length of the loop, seconds; lets the player trim encoder padding for a gapless loop. */
+  loopSeconds: number | null;
+  volume: number;
+  /** The player's built-in visualizer around `center`, or null for none. */
+  visualizer: { center: Vec3; radius: number; bars: number; hue: number } | null;
+  react: AudioReact[];
+}
+
 export interface Interactions {
   version: string;
   camera: CameraRules;
@@ -106,6 +140,7 @@ export interface Interactions {
   staticColliders: string[] | null;
   minigames: MinigameDef[];
   vehicles: VehicleDef[];
+  audio: AudioDef[];
   /**
    * Trigger features the file uses that this player cannot run (an `on.*` handler it has no
    * semantics for). They are never silently dropped: they become warnings, and a world that lists
@@ -140,7 +175,7 @@ const vec3 = (v: unknown): Vec3 | null => (isVec3(v) && v.every((n) => Math.abs(
 const list = (v: unknown): unknown[] => (Array.isArray(v) ? v.slice(0, MAX_ITEMS) : []);
 
 export function emptyInteractions(): Interactions {
-  return { version: PAYLOAD_VERSION, camera: { spawn: null, lookAt: null, firstPersonHeight: 1.7, bounds: null }, objects: [], staticColliders: null, minigames: [], vehicles: [], unsupported: [] };
+  return { version: PAYLOAD_VERSION, camera: { spawn: null, lookAt: null, firstPersonHeight: 1.7, bounds: null }, objects: [], staticColliders: null, minigames: [], vehicles: [], audio: [], unsupported: [] };
 }
 
 /** Clamps minigame rules to playable ranges. Used for files and for the edit panel alike. */
@@ -252,6 +287,39 @@ function parseVehicle(raw: Json, warn: (m: string) => void): VehicleDef | null {
   };
 }
 
+const PAYLOAD_PATH = /^[A-Za-z0-9._/-]{1,200}$/;
+
+function parseAudio(raw: Json, warn: (m: string) => void): AudioDef | null {
+  const aid = id(raw.id), file = typeof raw.file === 'string' && PAYLOAD_PATH.test(raw.file) && !raw.file.includes('..') ? raw.file : null;
+  if (!aid || !file) {
+    warn('an audio track needs an id and a file inside the world, ignored');
+    return null;
+  }
+  const v = raw.visualizer;
+  const vis = v === false || v === null ? null : isJson(v) ? v : {};
+  const react: AudioReact[] = [];
+  for (const r of list(raw.react).slice(0, 64)) {
+    if (!isJson(r) || !str(r.node)) continue;
+    const band = AUDIO_BANDS.includes(r.band as AudioBand) ? (r.band as AudioBand) : 'energy';
+    const sc = Array.isArray(r.scale) && r.scale.length === 2 && r.scale.every((n) => typeof n === 'number' && Number.isFinite(n)) ? ([clamp(r.scale[0], 0, 20), clamp(r.scale[1], 0, 20)] as [number, number]) : null;
+    const axis = r.axis === 'x' || r.axis === 'y' || r.axis === 'z' ? r.axis : 'all';
+    react.push({ node: str(r.node)!, band, scale: sc, axis, glow: num(r.glow, 0, 0, 20) });
+  }
+  return {
+    id: aid,
+    file,
+    title: str(raw.title),
+    artist: str(raw.artist),
+    loop: raw.loop !== false,
+    loopSeconds: typeof raw.loopSeconds === 'number' && raw.loopSeconds > 0.1 && raw.loopSeconds < 3600 ? raw.loopSeconds : null,
+    volume: num(raw.volume, 0.8, 0, 1),
+    visualizer: vis
+      ? { center: vec3(vis.center) ?? [0, 2.4, 0], radius: num(vis.radius, 7, 1, 100), bars: Math.round(num(vis.bars, 96, 8, 256)), hue: num(vis.hue, 0.75, 0, 1) }
+      : null,
+    react,
+  };
+}
+
 /** Reads interactions.json. Pass the parsed JSON (or null/undefined when the world has none). */
 export function parseInteractions(raw: unknown): { interactions: Interactions; warnings: string[] } {
   const out = emptyInteractions();
@@ -299,6 +367,10 @@ export function parseInteractions(raw: unknown): { interactions: Interactions; w
       const v = parseVehicle(item, warn);
       if (v && (seen.has(v.id) || out.vehicles.some((o) => o.id === v.id))) warn(`duplicate id "${v.id}" for a vehicle, ignored`);
       else if (v) out.vehicles.push(v);
+    } else if (isJson(item) && item.type === 'audio') {
+      const a = parseAudio(item, warn);
+      if (a && (seen.has(a.id) || out.vehicles.some((o) => o.id === a.id) || out.audio.some((o) => o.id === a.id))) warn(`duplicate id "${a.id}" for an audio track, ignored`);
+      else if (a) out.audio.push(a);
     } else freeForm++;
   }
   if (freeForm > 0) unsupported(`interactions[] (${freeForm} free-form entr${freeForm === 1 ? 'y' : 'ies'}) has no defined behaviour in v0.1`);

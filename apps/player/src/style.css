@@ -41,6 +41,15 @@ main { flex: 1; display: flex; min-height: 0; }
 #stick { position: absolute; width: 112px; height: 112px; margin: -56px 0 0 -56px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.35); background: rgba(255, 255, 255, 0.08); pointer-events: none; }
 #knob { position: absolute; left: 50%; top: 50%; width: 48px; height: 48px; margin: -24px 0 0 -24px; border-radius: 50%; background: rgba(255, 255, 255, 0.55); }
 .touch-btn { position: absolute; right: max(18px, env(safe-area-inset-right)); bottom: max(26px, env(safe-area-inset-bottom)); width: 88px; height: 88px; border-radius: 50%; border: 2px solid #ef8a4a; background: rgba(194, 87, 26, 0.75); color: #fff; font: inherit; font-weight: 700; touch-action: none; z-index: 2; }
+/* Music worlds: a big first tap (browsers start audio only from a gesture), then a small bar. */
+#music-tap { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 3; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 22px 34px; border-radius: 22px; border: 2px solid #c58bff; background: rgba(40, 18, 70, 0.82); color: #fff; font: inherit; font-size: 26px; font-weight: 800; cursor: pointer; box-shadow: 0 0 40px rgba(170, 90, 255, 0.45); }
+#music-tap span { white-space: nowrap; }
+#music-tap small { font-size: 14px; font-weight: 500; opacity: 0.85; }
+#music-bar { position: absolute; right: max(12px, env(safe-area-inset-right)); bottom: max(12px, env(safe-area-inset-bottom)); z-index: 2; display: flex; align-items: center; gap: 10px; padding: 6px 12px; border-radius: 999px; max-width: calc(100% - 24px); }
+#music-bar .btn { width: 40px; height: 40px; padding: 0; border-radius: 50%; font-size: 18px; }
+#music-title { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40vw; }
+#music-volume { width: 110px; accent-color: #c58bff; }
+body.touch #music-bar { top: 10px; bottom: auto; right: 50%; transform: translateX(50%); }
 /* Drive pad (touch only): steer under the left thumb, pedals under the right. Buttons are held. */
 #drive-pad { position: absolute; inset: auto 0 0 0; height: 0; z-index: 2; pointer-events: none; }
 body:not(.touch) #drive-pad { display: none; }

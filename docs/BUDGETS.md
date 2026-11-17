@@ -31,7 +31,7 @@ Change a budget in one place: the JSON.
 | **player JS, initial (entry graph) gzip** | **300 KiB** | ~209.9 KiB | 1.43× |
 | any single **deferred** JS chunk gzip | 512 KiB | — | — |
 | runtime WASM/models gzip (Phase One) | **0 B** | 0 B | — |
-| player dist total gzip (excl. `.map` and runtime WASM) | 1.5 MiB | — | — |
+| player dist total gzip (excl. `.map`, runtime WASM and bundled sample `.wgif` worlds, which are content held to the per-world budgets) | 1.5 MiB | — | — |
 
 Unknown entry names fall back to the 256 KiB default, so a new asset type
 cannot sneak in unbounded.

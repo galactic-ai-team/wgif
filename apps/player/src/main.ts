@@ -13,6 +13,7 @@ import { WorldSaver, draftFits, openStateStore } from './save.js';
 import { BallReturnAgent } from './sim/agents.js';
 import type { RuntimeEvent, WorldRuntime } from './sim/runtime.js';
 import type { Vec3 } from './sim/vec.js';
+import type { WorldMusic } from './audio/music.js';
 import { WorldViewer, type ControlMode } from './viewer.js';
 import { WorldOpenError, describeMode, describeTrust, formatBytes, loadDocument, openWorld, withEdits, type WorldDocument } from './world.js';
 
@@ -71,6 +72,8 @@ let session: Session | null = null;
 let editing = false;
 let previewUrl: string | null = null;
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
+/** The open world's music track and visual, if it has one (loaded on demand). */
+let music: WorldMusic | null = null;
 
 const controls = new PlayerControls(stage, { stick: $('stick'), knob: $('knob'), action: $('action') }, {
   onPrimary: () => {
@@ -276,6 +279,36 @@ async function mount(view: WorldDocument, state: GameState, keepPose = false): P
   if (rules) {
     $<HTMLInputElement>('ed-duration').value = String(rules.durationSec);
     $<HTMLInputElement>('ed-points').value = String(rules.pointsPerBasket);
+  }
+  await setupMusic(view);
+}
+
+/**
+ * A world with a music track (interactions[] type "audio") gets its player, visual and controls.
+ * The code for it is a separate chunk, loaded only for such worlds. Reloading the world (after an
+ * edit) starts the track again from the play button.
+ */
+async function setupMusic(view: WorldDocument): Promise<void> {
+  music = null; // the viewer disposed the previous one with its world
+  const def = view.interactions.audio[0];
+  if (!viewer || !session || !def) return;
+  const bytes = view.world.files[def.file];
+  if (!bytes) {
+    session.warnings.push(`audio "${def.id}": ${def.file} is not in the world, so there is no music`);
+    return;
+  }
+  if (view.interactions.audio.length > 1) session.warnings.push('audio: only the first track plays in this player');
+  try {
+    const { mountMusic } = await import('./audio/music.js');
+    music = mountMusic(viewer, def, bytes, {
+      tap: $<HTMLButtonElement>('music-tap'),
+      bar: $('music-bar'),
+      toggle: $<HTMLButtonElement>('music-toggle'),
+      title: $('music-title'),
+      volume: $<HTMLInputElement>('music-volume'),
+    });
+  } catch (e) {
+    session.warnings.push(`audio: the music player could not load (${(e as Error).message ?? e})`);
   }
 }
 
@@ -803,6 +836,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
     get viewer() { return viewer; },
     get runtime() { return viewer?.runtime ?? null; },
     get session() { return session; },
+    get music() { return music; },
     setMode,
     setEditing,
     toggleDrive,
