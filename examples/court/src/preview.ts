@@ -70,7 +70,11 @@ export function renderPreviewPng(width = 320, height = 192): Uint8Array {
         const onKey = (fromBase <= 5.8 && near(Math.abs(z), 2.45)) || (near(fromBase, 5.8) && Math.abs(z) <= 2.45);
         const onCircle = near(Math.hypot(x, z), 1.8) || (near(Math.hypot(Math.abs(x) - (L / 2 - 5.8), z), 1.8) && fromBase > 5.8);
         const onBoundary = near(Math.abs(x), L / 2) || near(Math.abs(z), W / 2) || near(x, 0);
-        if (onArc || onKey || onCircle || onBoundary || onHash) c = [245, 245, 245];
+        const dxSpawn = x - 4.0;
+        const onPortraitFrustum =
+          dxSpawn >= 0 && dxSpawn <= 8.425 && near(Math.abs(z), dxSpawn * 0.267);
+        if (onArc || onKey || onCircle || onBoundary || onHash || onPortraitFrustum) c = [245, 245, 245];
+        if (Math.hypot(dxSpawn, z) <= 0.35) c = [64, 224, 255];
         if (near(Math.hypot(x - rx, z), COURT.rimRadius * 2)) c = [255, 96, 16];
       } else if (Math.abs(z) > W / 2 + 2.5) {
         c = [70, 74, 86]; // bleachers

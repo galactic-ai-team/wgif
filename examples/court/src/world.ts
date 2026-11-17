@@ -373,7 +373,7 @@ function injectCourtVisualPolishGlb(baseGlb: Uint8Array): Uint8Array {
 export function interactions() {
   return {
     version: '0.1',
-    camera: { spawn: [0, 1.7, 9.5], lookAt: [0, 1.2, 0], firstPersonHeight: 1.7, bounds: { min: [-17, 0, -10], max: [17, 6, 10] } },
+    camera: { spawn: [4.0, 1.7, 0], lookAt: [12.425, 1.8, 0], firstPersonHeight: 1.7, bounds: { min: [-17, 0, -10], max: [17, 6, 10] } },
     objects: [
       {
         id: 'ball',
@@ -486,7 +486,7 @@ export function courtManifest(): ManifestInput {
     mode: 'editable',
     units: 'meters',
     entry: { scene: 'world.glb', preview: 'preview.png', interactions: 'interactions.json', state: 'game-state.json' },
-    spawn: { position: [0, 1.7, 9.5], lookAt: [0, 1.2, 0] },
+    spawn: { position: [4.0, 1.7, 0], lookAt: [12.425, 1.8, 0] },
     requires: ['scene.glb', 'runtime.rules'],
     models,
     provenance: { generator: 'wgif example-court 0.1.0' },
