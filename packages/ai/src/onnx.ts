@@ -7,10 +7,13 @@ import {
   observationToFeatures,
   ONNX_ACTION_FEATURES,
   ONNX_DEAD_ZONE_MS,
+  ONNX_DIST_TO_BALL_IDX,
   ONNX_INPUT_NAME,
   ONNX_MAX_SPEED,
   ONNX_OBS_FEATURES,
+  ONNX_OUT_OF_BOUNDS_IDX,
   ONNX_OUTPUT_NAME,
+  ONNX_PICKUP_RADIUS_M,
 } from './features.js';
 import { validateObservation } from './rules.js';
 
@@ -64,25 +67,30 @@ export class OnnxNpc implements NpcModel {
   private session: OrtSession;
   private home: Vec3;
   private bounds: typeof DEFAULT_COURT_BOUNDS;
+  private pickupRadius: number;
+  /** Display-only state, from the last action computed (starts 'onnx'). */
+  private lastState = 'onnx';
 
-  private constructor(descriptor: ModelEntry, session: OrtSession, home: Vec3, bounds: typeof DEFAULT_COURT_BOUNDS) {
+  private constructor(descriptor: ModelEntry, session: OrtSession, home: Vec3, bounds: typeof DEFAULT_COURT_BOUNDS, pickupRadius = ONNX_PICKUP_RADIUS_M) {
     this.descriptor = descriptor;
     this.id = descriptor.id;
     this.session = session;
     this.home = home;
     this.bounds = bounds;
+    this.pickupRadius = pickupRadius;
   }
 
-  /** Display-only state, derived from the observation (the graph itself is stateless). */
+  /** Display-only state, from the last action (`chase` / `carry` / `pass`). */
   get state(): string {
-    return 'onnx';
+    return this.lastState;
   }
 
   reset(): void {
-    // Stateless: nothing to reset. Kept for the NpcModel interface.
+    // Stateless: nothing to reset, except the display state.
+    this.lastState = 'onnx';
   }
 
-  static async load(descriptor: ModelEntry, bytes: Uint8Array, home: Vec3 = DEFAULT_HOME, bounds = DEFAULT_COURT_BOUNDS): Promise<OnnxNpc> {
+  static async load(descriptor: ModelEntry, bytes: Uint8Array, home: Vec3 = DEFAULT_HOME, bounds = DEFAULT_COURT_BOUNDS, pickupRadius = ONNX_PICKUP_RADIUS_M): Promise<OnnxNpc> {
     if (descriptor.runtime !== 'onnx') {
       throw new OnnxModelError(`model "${descriptor.id}" is not an onnx model (runtime is "${descriptor.runtime}")`);
     }
@@ -148,7 +156,7 @@ export class OnnxNpc implements NpcModel {
     if (probeAction.data.length !== ONNX_ACTION_FEATURES.length) {
       throw new OnnxModelError(`onnx model "${descriptor.id}" returned a short action tensor (${probeAction.data.length} values, expected ${ONNX_ACTION_FEATURES.length})`);
     }
-    return new OnnxNpc(descriptor, session, home, bounds);
+    return new OnnxNpc(descriptor, session, home, bounds, pickupRadius);
   }
 
   async update(obs: NpcObservation, dt: number): Promise<NpcAction> {
@@ -177,8 +185,14 @@ export class OnnxNpc implements NpcModel {
     const vx = clamp(Number(action.data[0]), -ONNX_MAX_SPEED, ONNX_MAX_SPEED);
     const vz = clamp(Number(action.data[1]), -ONNX_MAX_SPEED, ONNX_MAX_SPEED);
     const passBall = Number(action.data[2]) > 0.5;
-    const holdingBall = obs.ball.heldBy === 'rebounder';
+    // The pickup decision, same as the JS MLP evaluator (jsmlp.ts): already
+    // holding it, or the loose ball is within reach on the court. The two
+    // evaluators must agree on every observation.
+    const holdingBall =
+      obs.ball.heldBy === 'rebounder' ||
+      (obs.ball.heldBy === null && Number(features[ONNX_OUT_OF_BOUNDS_IDX]) === 0 && Number(features[ONNX_DIST_TO_BALL_IDX]) <= this.pickupRadius);
     const state = passBall ? 'pass' : holdingBall ? 'carry' : 'chase';
+    this.lastState = state;
     const target = holdingBall ? obs.player.position : obs.ball.position;
     const speed = Math.hypot(vx, vz);
     const velocity: Vec3 = speed < ONNX_DEAD_ZONE_MS ? [0, 0, 0] : [vx, 0, vz];
