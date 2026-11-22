@@ -198,10 +198,16 @@ describe('the photo world export', () => {
     const node = opened.scene.getObjectByName('photo') as unknown as { geometry: { attributes: { position: { array: Float32Array } } } };
     const z = Array.from(node.geometry.attributes.position.array).filter((_, i) => i % 3 === 2);
     expect(Math.max(...z) - Math.min(...z)).toBeGreaterThan(1);
-    // The walker stands on the floor.
+    // The walker stands on the floor, which now sits just below the bottom of the picture mesh.
+    const ys = (name: string): number[] => {
+      const g = opened.scene.getObjectByName(name) as unknown as { geometry: { attributes: { position: { array: Float32Array } } } };
+      return Array.from(g.geometry.attributes.position.array).filter((_, i) => i % 3 === 1);
+    };
+    const floorY = Math.min(...ys('floor'));
+    expect(floorY).toBeCloseTo(Math.min(...ys('photo')) - 0.02, 2);
     run(opened.runtime, 1);
-    expect(opened.runtime.player.feet[1]).toBeGreaterThan(-0.05);
-    expect(opened.runtime.player.feet[1]).toBeLessThan(0.3);
+    expect(opened.runtime.player.feet[1]).toBeGreaterThan(floorY - 0.05);
+    expect(opened.runtime.player.feet[1]).toBeLessThan(floorY + 0.3);
   });
 
   it('a GIF becomes an animated world with a frame sheet; the flat mode is a room', async () => {
