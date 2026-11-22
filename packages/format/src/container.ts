@@ -1,4 +1,4 @@
-import { unzipSync, zipSync, type Zippable } from 'fflate';
+import { Inflate, zipSync, type Zippable } from 'fflate';
 import type { FileEntry, FileRole, ManifestInput, WgifFiles, WgifManifest, WgifWorld } from './types.js';
 import { MANIFEST_PATH } from './types.js';
 import { signingHash, verifyManifestSignature } from './signing.js';
@@ -68,28 +68,61 @@ export class WgifReadError extends Error {
 }
 
 /** Preflights ZIP offsets, methods, paths, duplicates and entry limits before decompression. */
+/** Small compressed chunks bound transient expansion before each budget check. */
+const INFLATE_SOURCE_CHUNK_BYTES = 256;
+
+/** Reads ZIP entries from validated local spans, checking actual output as it inflates. */
 export function readContainer(bytes: Uint8Array, limits: Limits = DEFAULT_LIMITS): { manifestJson: unknown; files: WgifFiles } {
-  try { checkZipStructure(bytes, limits); }
+  let entries: ReturnType<typeof checkZipStructure>;
+  try { entries = checkZipStructure(bytes, limits); }
   catch (e) {
     if (e instanceof ZipSafetyError) throw new WgifReadError(e.code, e.message);
     throw e;
   }
-  let count = 0, total = 0;
-  let raw: Record<string, Uint8Array>;
+
+  // Never trust the central directory's advertised originalSize as an
+  // inflation allowance: it can lie. Limit the actual decompressed output
+  // incrementally; do not use unzipSync's single preallocated output buffer.
+  const raw: Record<string, Uint8Array> = Object.create(null) as Record<string, Uint8Array>;
+  let expandedTotal = 0;
+  for (const entry of entries) {
+    const source = bytes.subarray(entry.dataOffset, entry.dataOffset + entry.compressedSize);
+    const chunks: Uint8Array[] = [];
+    let expanded = 0;
+    const append = (chunk: Uint8Array): void => {
+      const next = expanded + chunk.byteLength;
+      if (next > limits.maxEntryBytes)
+        throw new WgifReadError('container.entrysize', `"${entry.name}" exceeds the uncompressed entry limit`);
+      if (expandedTotal + next > limits.maxTotalBytes)
+        throw new WgifReadError('container.totalsize', 'actual inflated bytes exceed the total limit');
+      if (next > entry.originalSize)
+        throw new WgifReadError('container.corrupt', `"${entry.name}" inflates beyond its declared size`);
+      expanded = next;
+      if (chunk.byteLength) chunks.push(chunk.slice());
+    };
   try {
-    raw = unzipSync(bytes, { filter: (f) => {
-      count++;
-      total += f.originalSize;
-      if (count > limits.maxEntries) throw new WgifReadError('container.entries', `more than ${limits.maxEntries} entries`);
-      if (f.originalSize > limits.maxEntryBytes) throw new WgifReadError('container.entrysize', `"${f.name}" is too large`);
-      if (total > limits.maxTotalBytes) throw new WgifReadError('container.totalsize', 'uncompressed size exceeds limit');
-      if (!isSafePath(f.name)) throw new WgifReadError('path.unsafe', `unsafe entry path "${f.name}"`);
-      return true;
-    } });
+      if (entry.method === 0) append(source);
+      else {
+        const stream = new Inflate((chunk) => append(chunk));
+        if (source.byteLength === 0) stream.push(new Uint8Array(0), true);
+        for (let i = 0; i < source.byteLength; i += INFLATE_SOURCE_CHUNK_BYTES) {
+          const end = Math.min(i + INFLATE_SOURCE_CHUNK_BYTES, source.byteLength);
+          stream.push(source.subarray(i, end), end === source.byteLength);
+        }
+      }
   } catch (e) {
     if (e instanceof WgifReadError) throw e;
-    throw new WgifReadError('container.corrupt', `could not read ZIP: ${(e as Error).message}`);
+      throw new WgifReadError('container.corrupt', `could not inflate "${entry.name}": ${(e as Error).message}`);
+    }
+    if (expanded !== entry.originalSize)
+      throw new WgifReadError('container.corrupt', `"${entry.name}" inflated to ${expanded} bytes, declared ${entry.originalSize}`);
+    const output = new Uint8Array(expanded);
+    let written = 0;
+    for (const chunk of chunks) { output.set(chunk, written); written += chunk.byteLength; }
+    raw[entry.name] = output;
+    expandedTotal += expanded;
   }
+
   const manifestBytes = raw[MANIFEST_PATH];
   if (!manifestBytes) throw new WgifReadError('manifest.missing', 'manifest.json not found at container root');
   if (manifestBytes.byteLength > 1024 * 1024)

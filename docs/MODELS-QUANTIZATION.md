@@ -1,8 +1,11 @@
 # Embedded model quantization & mobile performance (Phase Two)
 
 Owner: Dee (OPTIMIZATION), with Nova.
-Status: **planning**. Phase One keeps `models/` reserved and empty; nothing
-here ships until a Phase Two model lands. Targets `dev` @ e88729b.
+Status: **Phase Two quantization planning (historical sizing estimates)**.
+Phase One already ships the data-only `models/rebounder-mlp.onnx` and
+`models/rebounder.rules.json` inside `examples/court/court.wgif`, with a local
+JavaScript MLP evaluator and a rules fallback. This document concerns future
+larger models; the normative packaging rules are in `docs/spec/wgif-v0.1.md` §6.
 
 ## Scope
 

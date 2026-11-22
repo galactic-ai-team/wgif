@@ -1,11 +1,11 @@
 # WGIF v0.1 — file format specification
 
-**Technical contract:** WGIF manifest version `"0.1"` (release-candidate contract at
-`dev` `a1efb7e`). **Release status:** pending Stephon's owner ratification;
-this document does not authorize the `v0.1.0` tag or package-version bump.
-The older `docs/SPEC-v0.1-draft.md` records design history; this document
-consolidates the v0.1 wire-format rules reflected in the current schemas and
-`@wgif/format` validator.
+**Single normative v0.1 contract:** WGIF manifest version `"0.1"`. This
+specification, the five versioned JSON Schemas, and the format validator define
+v0.1 conformance. `docs/SPEC-v0.1-draft.md` and
+`docs/SPEC-5.5-models-proposal.md` are superseded historical pointers.
+Phase One's merge does not by itself authorize a `v0.1.0` tag or package bump;
+those remain subject to the explicit owner release gate.
 
 **Conformance language.** MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY express
 requirements for conforming v0.1 implementations. The five JSON Schemas in
@@ -57,6 +57,12 @@ and MUST NOT appear in its own `files[]` list.
 | Combined uncompressed ZIP bytes | 64 MiB (67,108,864) |
 | Uncompressed `manifest.json` | 1 MiB (1,048,576) |
 | Each referenced declarative JSON payload | 1 MiB (1,048,576) |
+
+Readers MUST enforce these limits **both before inflation**, using ZIP
+central-directory sizes, **and as actual bytes are produced during inflation**.
+A lying uncompressed-size field MUST NOT permit output past the entry or
+aggregate budget; readers MUST reject decoded sizes inconsistent with the
+ZIP's declared sizes. A reader MUST NOT rely on advertised sizes alone.
 
 A reader MAY impose tighter device limits. These are **safety ceilings**, not
 size targets: authors SHOULD follow `docs/BUDGETS.md` for the smaller Phase 1
@@ -119,6 +125,8 @@ A GLB MUST NOT declare glTF extensions outside this list. Its
 listed `extensionsUsed` extension MUST have the corresponding capability in
 `manifest.requires[]`. The release gate strictly parses the GLB JSON chunk;
 full glTF geometry/rendering validation remains a player responsibility.
+Node `extras.wgif` MAY carry data-only hints for built-in colliders or
+interactions but MUST NOT contain executable behavior.
 
 `entry.preview` MUST resolve to an embedded image. Authors SHOULD keep its
 longest dimension at most 512 pixels and its size at most 256 KiB. Auxiliary
@@ -174,7 +182,9 @@ MAY include `purpose`, semver-like `version`, named `inputs`/`outputs`,
 `schema/model-descriptor.v0.1.schema.json` mirrors the copy embedded in the
 manifest schema. IDs MUST match `[a-z][a-z0-9_-]{0,63}`; duplicate model
 IDs and duplicate model paths MUST be rejected. `rules` paths MUST end in
-`.json`; `onnx` paths MUST end in `.onnx`.
+`.json`; `onnx` paths MUST end in `.onnx`. Only descriptors in
+`manifest.models[]` are discoverable model candidates. Other safely declared
+files under `models/` remain inert payloads and MUST NOT be auto-executed.
 
 Each rules file MUST be valid UTF-8 JSON; its descriptor MUST declare
 `deterministic: true` and a `seed`. A player supporting rules MUST reject
@@ -184,7 +194,10 @@ and `dtype` (`float32`, `int32`, `int64`, or `bool`). Tensor shapes MUST start
 with batch dimension 1, use at most four positive dimensions and contain at
 most 65,536 elements. Named-field (non-tensor) rules descriptors MAY omit
 `inputs` and `outputs`. Duplicate field names and invalid numeric ranges
-MUST be rejected. `tickHz` is a maximum update rate, not a real-time guarantee.
+MUST be rejected. `tickHz` is a maximum update rate, not a real-time guarantee;
+players MUST NOT step a model faster than its declared rate. Before inference,
+a player MUST validate that an ONNX model's supported graph and tensor
+signature agree with its descriptor.
 
 Each unpacked model MUST remain at or under 1 MiB (1,048,576 bytes). When
 `sizeBytesMax` is absent, the enforced caps are 65,536 bytes for rules and
@@ -194,8 +207,12 @@ MUST NOT exceed 1 MiB; the actual file MUST fit its effective cap.
 Only an ONNX descriptor MAY declare `fallback`, and it MUST reference a
 **different**, same-`purpose` rules model in `models[]`; self-fallback,
 missing targets, ONNX-to-ONNX fallbacks, and fallback chains are forbidden.
-Fallback is an on-device runtime selection, never a substitute for ZIP,
-hash, schema or archive-security validation. If rules behavior is required
+Models of the same `purpose` SHOULD be tried in manifest order unless the
+user explicitly selects a local runtime preference. A fallback MUST select
+the exact model identified by `fallback`, not an arbitrary same-purpose model.
+Fallback occurs only after archive validation succeeds; missing archive files,
+hash mismatches and schema errors MUST reject the archive, not trigger fallback.
+If rules behavior is required
 for complete playback, `requires[]` MUST contain `runtime.rules`. An optional
 ONNX alternative with usable rules fallback SHOULD NOT require
 `runtime.onnx`; only a world that essentially needs a general ONNX runtime
@@ -253,7 +270,11 @@ archive's schema/hash `report.ok`. A player MUST NOT present an invalid
 signature as a verified origin. Cryptographic validity does **not** identify
 or endorse the real-world creator; no PKI is mandated. The reference
 `exportEditedWorld()` refuses to return a newly exported archive that fails
-post-export validation or has an invalid remaining signature.
+post-export validation or has an invalid remaining signature. Overlay layers,
+`modified`, and `provenance.history` are excluded from the creator signature;
+players MUST NOT present their authors or timestamps as cryptographically
+verified. Unsigned locked worlds MAY open, but MUST be labeled unverified
+when displaying origin status.
 
 ## 9. Conformance and release boundary
 
@@ -263,7 +284,8 @@ parsing `manifest.json` does not establish portability. Writers SHOULD run
 another compatible player/device. A web player intended to meet the Phase 1
 offline criterion MUST work after installation or through a documented
 local equivalent with networking disconnected; a remotely hosted page that
-cannot start offline does not meet that criterion.
+cannot start offline does not meet that criterion. Direct `file://` execution
+is NOT required: an installed offline-capable PWA or local application suffices.
 
 This document specifies the **v0.1 data contract**, not confirmation of
 full player feature support or release authorization. `docs/FREEZE-v0.1.md`

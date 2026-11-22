@@ -2,6 +2,14 @@
 import { fromUtf8, isSafePath } from './util.js';
 
 export interface ZipLimits { maxEntries: number; maxEntryBytes: number; maxTotalBytes: number }
+/** Validated local-entry spans, returned after central-directory preflight. */
+export interface ZipEntry {
+  name: string;
+  method: 0 | 8;
+  dataOffset: number;
+  compressedSize: number;
+  originalSize: number;
+}
 export class ZipSafetyError extends Error {
   constructor(public code: string, message: string) { super(message); this.name = 'ZipSafetyError'; }
 }
@@ -11,7 +19,7 @@ const U32 = (b: Uint8Array, p: number): number => (b[p]! + b[p + 1]! * 256 + b[p
 const SIGN = { local: 0x04034b50, central: 0x02014b50, end: 0x06054b50 };
 
 /** v0.1 intentionally excludes ZIP64, encryption, descriptors, directories, and prepended GIF data. */
-export function checkZipStructure(b: Uint8Array, limits: ZipLimits): void {
+export function checkZipStructure(b: Uint8Array, limits: ZipLimits): ZipEntry[] {
   if (b.length < 22 || U32(b, 0) !== SIGN.local) fail('container.notzip', 'WGIF requires a ZIP with manifest.json first (no prefix)');
   let eocd = -1;
   for (let p = b.length - 22; p >= Math.max(0, b.length - 65557); p--) {
@@ -38,6 +46,7 @@ export function checkZipStructure(b: Uint8Array, limits: ZipLimits): void {
     if (at !== begin + length) fail('container.corrupt', 'malformed ZIP extra field');
     return false;
   }
+  const entries: ZipEntry[] = [];
   const names = new Set<string>();
   const ranges: Array<[number, number]> = [];
   let total = 0, pos = dirOffset;
@@ -82,6 +91,7 @@ export function checkZipStructure(b: Uint8Array, limits: ZipLimits): void {
       fail('manifest.order', 'manifest.json MUST be the first, stored ZIP entry');
     if (method === 0 && compressed !== original)
       fail('container.corrupt', `stored ZIP entry has inconsistent size: ${name}`);
+    entries.push({ name, method: method as 0 | 8, dataOffset: data, compressedSize: compressed, originalSize: original });
     ranges.push([offset, data + compressed]);
     pos = end;
   }
@@ -91,4 +101,5 @@ export function checkZipStructure(b: Uint8Array, limits: ZipLimits): void {
     fail('container.corrupt', 'overlapping ZIP entries');
   if (ranges[0]?.[0] !== 0 || ranges.at(-1)?.[1] !== dirOffset)
     fail('container.corrupt', 'unindexed or trailing data before ZIP central directory');
+  return entries;
 }
