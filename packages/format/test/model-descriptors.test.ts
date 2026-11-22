@@ -35,6 +35,23 @@ const warningCodes = async (models: ModelEntry[], requires?: string[]) =>
   (await world(models, {}, requires)).report.warnings.map((w) => w.code);
 
 describe('Nova model descriptors integrated into hardened RC1 validator', () => {
+  it('the committed court has one valid descriptor per shipped models/ asset', async () => {
+    const bytes = new Uint8Array(await readFile(new URL('../../../examples/court/court.wgif', import.meta.url)));
+    const court = await unpackWgif(bytes);
+    expect(court.report.ok).toBe(true);
+    const shipped = Object.keys(court.files).filter((path) => path.startsWith('models/')).sort();
+    const descriptors = court.manifest.models ?? [];
+    expect(shipped).toEqual(['models/rebounder-mlp.onnx', 'models/rebounder.rules.json']);
+    expect(descriptors.map((model) => model.path).sort()).toEqual(shipped);
+    expect(new Set(descriptors.map((model) => model.id)).size).toBe(descriptors.length);
+    for (const model of descriptors) {
+      expect(model.path.startsWith('models/')).toBe(true);
+      expect(court.manifest.files.find((f) => f.path === model.path))
+        .toMatchObject({ path: model.path, role: 'model' });
+      expect(court.files[model.path]?.byteLength).toBeGreaterThan(0);
+    }
+    expect(court.report.errors).toEqual([]);
+  });
   it('accepts a same-purpose ONNX -> rules fallback without requiring ONNX', async () => {
     const result = await world([onnx, rules]);
     expect(result.report.ok).toBe(true);

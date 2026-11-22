@@ -74,6 +74,37 @@ describe('portable WGIF fixture corpus', () => {
     expect(opened.report.ok).toBe(false);
     expect(opened.report.errors.length).toBeGreaterThan(0);
   });
+  it('caps actual inflated output when matching ZIP headers lie about the uncompressed size', () => {
+    const packed: Zippable = {
+      'manifest.json': [utf8('{}'), { level: 0 }],
+      'assets/large.bin': [new Uint8Array(4096).fill(65), { level: 9 }],
+    };
+    const bytes = Uint8Array.from(zipSync(packed));
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    // Change both central and local originalSize, so structure checks pass
+    // while the DEFLATE stream still expands to 4096 real bytes.
+    let central = -1;
+    for (let i = 0; i < bytes.length - 46; i++) {
+      if (view.getUint32(i, true) !== 0x02014b50) continue;
+      const length = view.getUint16(i + 28, true);
+      const name = new TextDecoder().decode(bytes.subarray(i + 46, i + 46 + length));
+      if (name === 'assets/large.bin') { central = i; break; }
+    }
+    expect(central).toBeGreaterThan(0);
+    const local = view.getUint32(central + 42, true);
+    view.setUint32(central + 24, 8, true);
+    view.setUint32(local + 22, 8, true);
+
+    const entryLimits = { maxEntries: 8, maxEntryBytes: 512, maxTotalBytes: 8192 };
+    expect(() => readContainer(bytes, entryLimits)).toThrow(WgifReadError);
+    try { readContainer(bytes, entryLimits); }
+    catch (e) { expect(e).toMatchObject({ code: 'container.entrysize' }); }
+
+    const totalLimits = { maxEntries: 8, maxEntryBytes: 8192, maxTotalBytes: 512 };
+    expect(() => readContainer(bytes, totalLimits)).toThrow(WgifReadError);
+    try { readContainer(bytes, totalLimits); }
+    catch (e) { expect(e).toMatchObject({ code: 'container.totalsize' }); }
+  });
   it('rejects a decompression budget exceeded before extraction', async () => {
     const bytes = await fixture('good-minimal.wgif');
     expect(() => readContainer(bytes, { maxEntries: 1, maxEntryBytes: 1024, maxTotalBytes: 1024 }))
