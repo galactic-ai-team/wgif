@@ -61,7 +61,7 @@ const probe = (page) =>
       verts = a.length / 3;
     }
     const cam = p.viewer?.camera.position;
-    const map = mesh?.material?.emissiveMap;
+    const map = mesh?.material?.map ?? mesh?.material?.emissiveMap;
     return {
       made: !!w, bytes: w?.bytes.length ?? 0, sizes: w?.sizes ?? null, zRange: zr, verts,
       camera: cam ? [cam.x, cam.y, cam.z] : null, title: document.title, status: document.getElementById('cr-status').textContent,

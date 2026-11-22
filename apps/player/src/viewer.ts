@@ -67,6 +67,8 @@ interface Flash {
 
 const ARC_POINTS = 48;
 const FLASH_SEC = 0.8;
+/** A picture is a texture of at most ~1000 px: rendering it above 1.5 device pixels per CSS pixel only costs fill rate. */
+const PICTURE_MAX_PIXEL_RATIO = 1.5;
 const ray = newRayHit();
 
 /**
@@ -112,6 +114,9 @@ export class WorldViewer {
   private eyeY = 0;
   private renderFrames = 2;
   private shadowsDirty = true;
+  /** A picture world (see photo/player.ts): flat unlit surfaces, so no shadow pass, a lower resolution cap and damped orbit even on phones. */
+  private pictureWorld = false;
+  private readonly coarse: boolean;
   /** The camera as last drawn, so a walker standing still costs no frames. */
   private readonly lastView = new Float64Array(16);
   private renderedLastFrame = false;
@@ -122,10 +127,11 @@ export class WorldViewer {
 
   constructor(private readonly host: HTMLElement, private readonly input: InputSource) {
     const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+    this.coarse = coarse;
     const dpr = window.devicePixelRatio || 1;
     this.quality = new QualityGovernor({ devicePixelRatio: dpr, mobile: coarse });
-    // PERF.md fix #5: MSAA is expensive on dense (mostly phone) screens, where it also matters least.
-    this.renderer = new THREE.WebGLRenderer({ antialias: dpr < 2, powerPreference: 'high-performance' });
+    // PERF.md fix #5: MSAA is expensive on dense (mostly phone) screens, where it also matters least. Touch devices never get it.
+    this.renderer = new THREE.WebGLRenderer({ antialias: dpr < 2 && !coarse, powerPreference: 'high-performance' });
     // Dee's mobile item 1: never render above 2x. The quality governor may only go lower from here.
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -320,6 +326,7 @@ export class WorldViewer {
     // the picture) and orbits around its middle distance; its preview is a small turn to one side.
     const photo = ride || vis ? null : doc.interactions.photos[0];
     this.snapPose = null;
+    this.setPictureWorld(!!photo);
     if (photo) {
       const focus = new THREE.Vector3(...photo.focus);
       const eye = photo.eye ? new THREE.Vector3(...photo.eye) : focus.clone().addScaledVector(side, 6);
@@ -363,6 +370,23 @@ export class WorldViewer {
   attach(extra: FrameExtra): void {
     this.extras.push(extra);
     this.invalidate();
+  }
+
+  /**
+   * A picture world draws one unlit surface that needs no shadows, so the shadow pass goes and the
+   * pixel ratio is capped at PICTURE_MAX_PIXEL_RATIO. Damping stays on for phones too: with the finger
+   * lifted the picture keeps turning for a moment instead of stopping dead, which reads as smoother.
+   */
+  private setPictureWorld(on: boolean): void {
+    const changed = on !== this.pictureWorld;
+    this.pictureWorld = on;
+    this.orbit.enableDamping = on || !this.coarse;
+    if (changed) this.applyQuality();
+  }
+
+  /** The quality step now (0 best), so per-frame extras can drop optional work on a slow device. */
+  get qualityLevel(): number {
+    return this.quality.level;
   }
 
   /** Slow automatic orbit in orbit view (OrbitControls autoRotateSpeed: 2 = one turn in 30 s), 0 = off. */
@@ -769,8 +793,8 @@ export class WorldViewer {
 
   private applyQuality(): void {
     const q = this.quality.settings;
-    this.renderer.setPixelRatio(q.pixelRatio);
-    this.sun.castShadow = q.shadows;
+    this.renderer.setPixelRatio(this.pictureWorld ? Math.min(q.pixelRatio, PICTURE_MAX_PIXEL_RATIO) : q.pixelRatio);
+    this.sun.castShadow = q.shadows && !this.pictureWorld;
     if (this.sun.shadow.mapSize.x !== q.shadowMapSize) {
       this.sun.shadow.mapSize.set(q.shadowMapSize, q.shadowMapSize);
       this.sun.shadow.map?.dispose();
