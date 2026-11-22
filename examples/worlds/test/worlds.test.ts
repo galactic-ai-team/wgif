@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { createNpcHook, parseRulesModel } from '@wgif/ai';
 import { readGlbJson, unpackWgif, verifyManifestSignature } from '@wgif/format';
 import { CITY, CITY_TEST_KEY_SEED, ORB_COUNT, buildCityWgif } from '../src/city.js';
 import { ARTWORKS } from '../src/gallery.js';
@@ -57,6 +58,44 @@ describe('rooftop', () => {
     const ix = JSON.parse(new TextDecoder().decode(world.files['interactions.json'])) as { minigames: { type: string; targets: string[] }[] };
     expect(ix.minigames[0]).toMatchObject({ type: 'basketball-shooting', targets: ['rim'] });
     expect((world.manifest.extensions?.['x-credits'] as { license: string }[])[0]!.license).toBe('CC0-1.0');
+  });
+
+  it('ships the rebounder model, and the NPC loads from the packed world', async () => {
+    const world = await unpackWgif(await WORLDS.rooftop!());
+    const models = world.manifest.models ?? [];
+    expect(models.map((m) => m.id)).toEqual(['rebounder-rules']);
+    const rules = models.find((m) => m.id === 'rebounder-rules')!;
+    expect(rules.runtime).toBe('rules');
+    expect(rules.purpose).toBe('rebounder');
+    expect(world.manifest.requires).toContain('runtime.rules');
+    // The descriptor is the contract: it must agree with the rules file it points to.
+    const parsed = parseRulesModel(world.files['models/rebounder.rules.json']!);
+    expect(rules.tickHz).toBe(parsed.tickHz);
+    expect(rules.seed).toBe(parsed.seed);
+    // The packed rules file carries the fix: in the chase state, an
+    // out-of-bounds ball is given up on before a near ball is picked up.
+    const chaseOn = parsed.states.chase!.on.map((t) => t.when);
+    expect(chaseOn.indexOf('ball_out_of_bounds')).toBeLessThan(chaseOn.indexOf('ball_near'));
+    expect(world.files['models/rebounder.rules.json']!.byteLength).toBeLessThanOrEqual(65536);
+    // And the NPC actually loads from the packed world and chases a loose ball.
+    const hook = await createNpcHook(world, 'rebounder');
+    expect(hook.runtime).toBe('rules');
+    expect(hook.usedFallback).toBe(false);
+    const self: [number, number, number] = [-6, 0, 6];
+    const ball: [number, number, number] = [5.2, 0.12, 1.4];
+    const result = await hook.tick(0.1, {
+      timeSec: 0,
+      ball: { position: ball, velocity: [0, 0, 0], heldBy: null },
+      player: { position: [0, 0, 0] },
+      self: { position: self },
+    });
+    expect(result.stepped).toBe(true);
+    expect(result.action.state).toBe('chase');
+    expect(result.action.holdingBall).toBe(false);
+    // Velocity points from the rebounder toward the ball.
+    const dx = ball[0] - self[0], dz = ball[2] - self[2];
+    expect(result.action.velocity[0]! * dx + result.action.velocity[2]! * dz).toBeGreaterThan(0);
+    hook.dispose();
   });
 });
 
