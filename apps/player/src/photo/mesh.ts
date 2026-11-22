@@ -210,7 +210,12 @@ export function buildPhotoMesh(depth: DepthMap | null, opts: MeshOptions): Photo
   const threshold = opts.cutThreshold ?? 0.06 * Math.max(1, 128 / Math.max(cols, rows));
   const tris: number[] = [];
   let cut = 0;
-  const jump = (a: number, b: number, c: number): number => Math.max(grid[a]!, grid[b]!, grid[c]!) - Math.min(grid[a]!, grid[b]!, grid[c]!);
+  const zOf = (v: number): number => eye[2] - positions[v * 3 + 2]!;
+  const jump = (a: number, b: number, c: number): number => {
+    const za = zOf(a), zb = zOf(b), zc = zOf(c);
+    const zMin = Math.min(za, zb, zc);
+    return zMin > 1e-6 ? (Math.max(za, zb, zc) - zMin) / zMin : 0;
+  };
   for (let j = 0; j < rows; j++) {
     for (let i = 0; i < cols; i++) {
       const a = j * vw + i, b = a + 1, c = a + vw, d = c + 1;
