@@ -68,8 +68,13 @@ export class WgifReadError extends Error {
 }
 
 /** Preflights ZIP offsets, methods, paths, duplicates and entry limits before decompression. */
-/** Small compressed chunks bound transient expansion before each budget check. */
-const INFLATE_SOURCE_CHUNK_BYTES = 256;
+/**
+ * Compressed bytes pushed per Inflate step. DEFLATE expands at most ~1032:1, so one
+ * step can produce at most ~16.5 MiB before the budget check runs (about the 16 MiB
+ * per-entry ceiling). 256 B made opening real worlds ~10x slower than unzipSync
+ * (street-3d.wgif: ~90 ms vs ~6 ms); 16 KiB is within ~1.4x.
+ */
+const INFLATE_SOURCE_CHUNK_BYTES = 16 * 1024;
 
 /** Reads ZIP entries from validated local spans, checking actual output as it inflates. */
 export function readContainer(bytes: Uint8Array, limits: Limits = DEFAULT_LIMITS): { manifestJson: unknown; files: WgifFiles } {
