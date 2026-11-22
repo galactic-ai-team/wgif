@@ -77,6 +77,8 @@ export interface Budgets {
   worldTotalBytes: number;
   worldEntryBytes: Record<string, number>;
   worldEntryDefaultBytes: number;
+  /** Larger per-entry budget for audio payloads (a 30-60 s track is 480-960 KB at 128 kbps). */
+  audioEntryBytes: number;
   playerInitialJsGzipBytes: number;
   playerDeferredChunkGzipBytes: number;
   playerDistGzipBytes: number;
@@ -91,6 +93,7 @@ export function loadBudgets(absPath: string): Budgets {
     "worldTotalBytes",
     "worldEntryBytes",
     "worldEntryDefaultBytes",
+    "audioEntryBytes",
     "playerInitialJsGzipBytes",
     "playerDeferredChunkGzipBytes",
     "playerDistGzipBytes",
@@ -249,6 +252,13 @@ export function formatBytes(n: number): string {
  */
 const PRECOMPRESSED =
   /\.(png|jpe?g|webp|avif|ktx2|mp3|ogg|opus|mp4|webm|woff2?|zip|gz|br)$/i;
+
+/**
+ * Audio payloads get their own, larger per-entry budget. A 30-60 s music
+ * track at 128 kbps is 480-960 KB, over the 256 KiB default entry budget.
+ */
+const AUDIO_ENTRY =
+  /\.(mp3|ogg|opus|m4a|aac|wav|flac|webm|oga)$/i;
 
 const SKIP_DIRS = new Set([
   "node_modules",
@@ -665,7 +675,8 @@ export function checkPhaseOneBudgets(
     // Entry-count is spec §2 exactly, checked in checkSpecLimits.
     for (const e of w.entries) {
       const limit =
-        budgets.worldEntryBytes[e.name] ?? budgets.worldEntryDefaultBytes;
+        budgets.worldEntryBytes[e.name] ??
+        (AUDIO_ENTRY.test(e.name) ? budgets.audioEntryBytes : budgets.worldEntryDefaultBytes);
       if (e.expandedBytes > limit) {
         v.push({
           id: `world.entry:${e.name}`,

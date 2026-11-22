@@ -92,6 +92,7 @@ const BUDGETS: Budgets = {
   worldTotalBytes: 1024,
   worldEntryBytes: { "preview.png": 256 },
   worldEntryDefaultBytes: 512,
+  audioEntryBytes: 8192,
   playerInitialJsGzipBytes: 1024,
   playerDeferredChunkGzipBytes: 512,
   playerDistGzipBytes: 4096,
@@ -491,6 +492,19 @@ describe("checkPhaseOneBudgets", () => {
     const violations = checkPhaseOneBudgets(makeReport([w]), BUDGETS);
     expect(violations.length).toBeGreaterThan(0);
     expect(violations.every((v) => v.severity === "phase-one")).toBe(true);
+  });
+
+  it("applies the audio budget to audio entries, not the default entry budget", () => {
+    // 1024 > 512 (worldEntryDefaultBytes) and < 8192 (audioEntryBytes): must pass.
+    const entries = [mkEntry("assets/music.mp3", 1024)];
+    const ids = checkPhaseOneBudgets(makeReport([makeWorld({ entries })]), BUDGETS).map((v) => v.id);
+    expect(ids).toEqual([]);
+  });
+
+  it("flags an audio entry over the audio budget", () => {
+    const entries = [mkEntry("assets/music.mp3", BUDGETS.audioEntryBytes + 1)];
+    const ids = checkPhaseOneBudgets(makeReport([makeWorld({ entries })]), BUDGETS).map((v) => v.id);
+    expect(ids).toContain("world.entry:assets/music.mp3");
   });
 });
 
