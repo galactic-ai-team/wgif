@@ -97,6 +97,24 @@ Measured headless (Chrome, SwiftShader, no GPU, this box): first load 3.3–4.0 
 ~30 MB + runtime start, fast network), inference 0.9–1.3 s at 392 px, later loads from the cache
 0.3 s.
 
+## Playback cost
+
+A picture world is a flat unlit surface, so the player draws it that way (nothing in the file changes):
+
+* The glTF stores the picture as an emissive map on a black base (true colours in any light). At play
+  time the player swaps that for an unlit `MeshBasicMaterial` with the same texture and factor, takes
+  the picture out of the shadow pass, and draws the dark floor unlit too. Same look, far less
+  per-pixel work (no lights, IBL or shadow lookups).
+* Picture worlds render at most 1.5 device pixels per CSS pixel (the texture is at most ~1000 px), keep
+  orbit damping on phones, and touch devices never get MSAA.
+* A GIF's sprite-sheet cells are inset by half a texel (no bleed from neighbouring frames), the sheet is
+  uploaded when the world opens, and nothing is redrawn between two frames unless the cross-fade runs.
+  Frames of 40 ms or more are cross-faded into the next one in the shader (two samples of the same
+  sheet), so a 14 fps GIF moves smoothly at the screen's rate; the quality governor turns the fade off
+  from step 3 down, and the player then draws only when the frame changes.
+* `apps/player/e2e/photo-perf.e2e.mjs` measures frame times and a synchronous render cost per world,
+  at desktop and 390x844 with CPU throttling (headless SwiftShader, so relative numbers only).
+
 ## Limits
 
 * One picture has one viewpoint: what was hidden behind things is not there. Cut edges show the
