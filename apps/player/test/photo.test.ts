@@ -210,6 +210,18 @@ describe('the photo world export', () => {
     expect(opened.runtime.player.feet[1]).toBeLessThan(floorY + 0.3);
   });
 
+  it('never puts the floor above any part of the picture (near object across the bottom, far ground above it)', async () => {
+    const w = 64, h = 48, data = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) data[y * w + x] = y > h * 0.85 ? 1 : 0.1;
+    const made = await buildPhotoWorld({ frames: [picture()], depth: { width: w, height: h, data }, mode: '3d', sourceName: 'table.png', created: '2026-11-22T00:00:00Z' }, pngCodec);
+    const opened = await open(made.bytes);
+    const ys = (name: string): number[] => {
+      const g = opened.scene.getObjectByName(name) as unknown as { geometry: { attributes: { position: { array: Float32Array } } } };
+      return Array.from(g.geometry.attributes.position.array).filter((_, i) => i % 3 === 1);
+    };
+    expect(Math.max(...ys('floor'))).toBeLessThan(Math.min(...ys('photo')));
+  });
+
   it('a GIF becomes an animated world with a frame sheet; the flat mode is a room', async () => {
     const frames = [0, 1, 2, 3, 4, 5].map((k) => {
       const p = picture(60, 40);

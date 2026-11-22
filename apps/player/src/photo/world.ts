@@ -322,10 +322,13 @@ function scene3d(first: Picture, depth: DepthMap | null, aspect: number, strengt
     3,
     1.6 * strength,
   );
+  // The bottom image row is not always the lowest part of the mesh (a near object across the bottom
+  // with far ground above it dips lower), so never let the floor cut through the picture.
+  const floorY = Math.min(backdrop.floorY, m.surface.min[1] - 0.02);
   const radius = Math.max(6, farZ * 1.1);
   const nodes: GlbNode[] = [
     { name: PHOTO_NODE, mesh: m.surface, material: 0 },
-    { name: 'floor', mesh: discMesh(0, -farZ * 0.55, backdrop.floorY, radius), material: 2, extras: { wgif: { collider: 'static' } } },
+    { name: 'floor', mesh: discMesh(0, -farZ * 0.55, floorY, radius), material: 2, extras: { wgif: { collider: 'static' } } },
   ];
   if (m.back) nodes.splice(1, 0, { name: BACK_NODE, mesh: m.back, material: 1 });
   return {
@@ -337,7 +340,7 @@ function scene3d(first: Picture, depth: DepthMap | null, aspect: number, strengt
     ],
     focus: m.focus,
     eye: m.eye,
-    bounds: { min: [-radius, backdrop.floorY, -farZ * 0.55 - radius], max: [radius, eyeY * 2 + 4, radius] },
+    bounds: { min: [-radius, floorY, -farZ * 0.55 - radius], max: [radius, eyeY * 2 + 4, radius] },
     statics: ['floor'],
     cut: m.cut,
     vertices: m.surface.positions.length / 3,
