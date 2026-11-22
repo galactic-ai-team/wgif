@@ -254,14 +254,34 @@ function renderGame(): void {
     : '';
 }
 
-/** Loads a document into the viewer, attaches the NPC and (optionally) puts the player back where they stood. */
-async function mount(view: WorldDocument, state: GameState, keepPose = false): Promise<void> {
-  if (!viewer || !session) return;
+/**
+ * Bumped by every mount (an open, a rebuild after an edit, a reset). A mount that finds it changed
+ * after an await has been overtaken by a newer one and stops there, so a world that finishes
+ * loading late never mixes into the one opened after it: its scene under the newer world's
+ * session, or its music, NPC or picture on the newer world.
+ */
+let loadTicket = 0;
+/** Bumped by every open request, so an older open that is still validating gives way to the newer one. */
+let openRequest = 0;
+
+/**
+ * Loads a document into the viewer for `owner`, attaches the NPC and (optionally) puts the player
+ * back where they stood. `owner` becomes the session the moment its world is on screen, never
+ * before: a scene that cannot be read leaves the open world and its session as they were. Returns
+ * false when a newer mount took over (or the viewer refused the scene as overtaken).
+ */
+async function mount(owner: Session, view: WorldDocument, state: GameState, keepPose = false): Promise<boolean> {
+  if (!viewer) return false;
+  const ticket = ++loadTicket;
   const old = viewer.runtime?.player;
   const pose = keepPose && old ? { feet: [...old.feet] as Vec3, yaw: old.yaw, pitch: old.pitch } : null;
-  const { runtime, built } = await viewer.load(view, state);
-  if (session.npc) {
-    runtime.setAgent(session.npc);
+  const loaded = await viewer.load(view, state);
+  if (!loaded || ticket !== loadTicket) return false;
+  // Same task as the viewer's swap: no frame of the new world can report to the old session.
+  session = owner;
+  const { runtime, built } = loaded;
+  if (owner.npc) {
+    runtime.setAgent(owner.npc);
     // The built-in ball return stays on as a safety net: a dead ball the NPC leaves alone comes back
     // after 2 s, and any ball is back in the shooter's hands at most 4 s after a shot (play test
     // 2026-11-16: returns took up to ~11 s, which ate the 60 s clock).
@@ -273,24 +293,28 @@ async function mount(view: WorldDocument, state: GameState, keepPose = false): P
     runtime.player.pitch = pose.pitch;
   }
   runtime.agentsEnabled = !editing;
-  session.props = new Set(built.props);
-  session.warnings = [...view.warnings, ...built.warnings, ...(session.npc?.info.warnings ?? [])];
+  owner.props = new Set(built.props);
+  owner.warnings = [...view.warnings, ...built.warnings, ...(owner.npc?.info.warnings ?? [])];
   const rules = runtime.shootout?.rules;
   if (rules) {
     $<HTMLInputElement>('ed-duration').value = String(rules.durationSec);
     $<HTMLInputElement>('ed-points').value = String(rules.pointsPerBasket);
   }
-  await setupMusic(view);
-  await setupPhoto(view);
+  await setupMusic(owner, view, ticket);
+  if (ticket !== loadTicket) return false;
+  await setupPhoto(owner, view, ticket);
+  return ticket === loadTicket;
 }
 
 /** A picture world (interactions[] type "photo"): true colours, and a GIF's animation. Its own small chunk. */
-async function setupPhoto(view: WorldDocument): Promise<void> {
+async function setupPhoto(owner: Session, view: WorldDocument, ticket: number): Promise<void> {
   const def = view.interactions.photos[0];
-  if (!viewer || !session || !def) return;
-  const warnings = session.warnings;
+  if (!viewer || !def) return;
+  const warnings = owner.warnings;
   try {
     const { mountPhoto } = await import('./photo/player.js');
+    // The chunk may have loaded after a newer world took over: it must not dress that one.
+    if (ticket !== loadTicket) return;
     await mountPhoto(viewer, def, def.frames ? view.world.files[def.frames.file] ?? null : null, (m) => warnings.push(m));
   } catch (e) {
     warnings.push(`photo: the picture player could not load (${(e as Error).message ?? e})`);
@@ -329,18 +353,21 @@ const isImageFile = (f: File): boolean => /^image\/(png|jpe?g|webp|gif|heic|heif
  * The code for it is a separate chunk, loaded only for such worlds. Reloading the world (after an
  * edit) starts the track again from the play button.
  */
-async function setupMusic(view: WorldDocument): Promise<void> {
+async function setupMusic(owner: Session, view: WorldDocument, ticket: number): Promise<void> {
   music = null; // the viewer disposed the previous one with its world
   const def = view.interactions.audio[0];
-  if (!viewer || !session || !def) return;
+  if (!viewer || !def) return;
   const bytes = view.world.files[def.file];
   if (!bytes) {
-    session.warnings.push(`audio "${def.id}": ${def.file} is not in the world, so there is no music`);
+    owner.warnings.push(`audio "${def.id}": ${def.file} is not in the world, so there is no music`);
     return;
   }
-  if (view.interactions.audio.length > 1) session.warnings.push('audio: only the first track plays in this player');
+  if (view.interactions.audio.length > 1) owner.warnings.push('audio: only the first track plays in this player');
   try {
     const { mountMusic } = await import('./audio/music.js');
+    // A newer world (or a second rebuild of this one) took over while the chunk loaded: mounting
+    // now would put a second player, visual and Tap to play on it.
+    if (ticket !== loadTicket) return;
     music = mountMusic(viewer, def, bytes, {
       tap: $<HTMLButtonElement>('music-tap'),
       bar: $('music-bar'),
@@ -349,7 +376,7 @@ async function setupMusic(view: WorldDocument): Promise<void> {
       volume: $<HTMLInputElement>('music-volume'),
     });
   } catch (e) {
-    session.warnings.push(`audio: the music player could not load (${(e as Error).message ?? e})`);
+    owner.warnings.push(`audio: the music player could not load (${(e as Error).message ?? e})`);
   }
 }
 
@@ -359,12 +386,17 @@ async function openBytes(bytes: Uint8Array, name: string): Promise<void> {
     showError(bad);
     return;
   }
+  // Last request wins: an older open still validating gives way, and stays silent about it.
+  const request = ++openRequest;
   try {
     const world = await openWorld(bytes);
     const doc = await loadDocument(world);
+    if (request !== openRequest) return;
     await session?.saver.flush();
     const saver = new WorldSaver(await store, doc.saveKey, { worldId: world.manifest.id, signingHash: doc.signingHash, title: world.manifest.title });
     const saved = await saver.load();
+    const npc = await createRebounder(world, { preferOnnx: npcOnnx });
+    if (request !== openRequest) return;
     try {
       viewer ??= new WorldViewer(stage, controls);
       viewer.driveSource = driveControls;
@@ -374,11 +406,11 @@ async function openBytes(bytes: Uint8Array, name: string): Promise<void> {
     viewer.hooks.onFrame = onFrame;
     if (editing) setEditing(false);
     hud.hideResult();
-    session = { doc, saver, edits: new EditSession(), npc: await createRebounder(world, { preferOnnx: npcOnnx }), props: new Set(), warnings: [], lastExport: null };
+    const next: Session = { doc, saver, edits: new EditSession(), npc, props: new Set(), warnings: [], lastExport: null };
     // Unsaved edits from last time come back, but only on the exact version they were made on.
     const draft = doc.policy.canEdit && draftFits(saved?.draft, layerIds(doc)) ? saved?.draft : undefined;
-    if (draft) session.edits.restore(draft.ops);
-    await mount(draft ? withEdits(doc, session.edits.ops) : doc, mergeState(doc.initialState, saved?.state));
+    if (draft) next.edits.restore(draft.ops);
+    if (!(await mount(next, draft ? withEdits(doc, next.edits.ops) : doc, mergeState(doc.initialState, saved?.state)))) return;
     $('empty').hidden = true;
     $('refused').hidden = true;
     applyControls();
@@ -386,8 +418,9 @@ async function openBytes(bytes: Uint8Array, name: string): Promise<void> {
     syncButtons();
     renderInfo();
     document.title = `${world.manifest.title} — WGIF Player`;
-    if (session.edits.dirty) notify(`Your ${session.edits.ops.length} unsaved edit${session.edits.ops.length === 1 ? ' is' : 's are'} back. Export to keep them in a file.`);
+    if (next.edits.dirty) notify(`Your ${next.edits.ops.length} unsaved edit${next.edits.ops.length === 1 ? ' is' : 's are'} back. Export to keep them in a file.`);
   } catch (e) {
+    if (request !== openRequest) return; // a newer open took over; this one has nothing left to say
     const err = e as WorldOpenError;
     showError(`${name}: ${err.message}`, err.details ?? []);
     if (err.preview) showRefused(name, err);
@@ -554,7 +587,8 @@ function editTarget(lift: number): Vec3 | null {
 async function rebuild(): Promise<void> {
   const rt = viewer?.runtime;
   if (!session || !rt) return;
-  await mount(withEdits(session.doc, session.edits.ops), rt.snapshot(), true);
+  // Two quick edits rebuild twice; only the newer rebuild finishes (see loadTicket).
+  if (!(await mount(session, withEdits(session.doc, session.edits.ops), rt.snapshot(), true))) return;
   viewer?.setMarkers(editing);
   syncButtons();
   renderGame();
@@ -673,7 +707,7 @@ $('forget').addEventListener('click', async () => {
   await session.saver.clear();
   session.edits.clear();
   viewer?.runtime?.stopShootout();
-  await mount(session.doc, session.doc.initialState);
+  if (!(await mount(session, session.doc, session.doc.initialState))) return;
   syncButtons();
   renderGame();
   notify('Progress for this world was reset.');

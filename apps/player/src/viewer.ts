@@ -124,6 +124,8 @@ export class WorldViewer {
   private readonly blobTexture = blobTexture();
   /** Draw calls saved by merging the static world (PERF.md fix #1), for the perf overlay. */
   merged: MergeStats = { before: 0, after: 0 };
+  /** Bumped by every load(), so a parse that finishes after a newer load started is dropped. */
+  private loadSeq = 0;
 
   constructor(private readonly host: HTMLElement, private readonly input: InputSource) {
     const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
@@ -238,21 +240,38 @@ export class WorldViewer {
     return out;
   }
 
-  /** Loads a world's scene and starts its simulation from the given state. */
-  async load(doc: WorldDocument, state: GameState): Promise<{ runtime: WorldRuntime; built: SceneColliders }> {
+  /**
+   * Loads a world's scene and starts its simulation from the given state. Returns null, changing
+   * nothing, when a newer load() started while this scene was being parsed: parses can finish out
+   * of order, and the older one must not replace the newer world. Throws, also changing nothing,
+   * when the scene cannot be read: the open world stays on screen.
+   */
+  async load(doc: WorldDocument, state: GameState): Promise<{ runtime: WorldRuntime; built: SceneColliders } | null> {
     const bytes = doc.world.files[doc.world.manifest.entry.scene];
     if (!bytes) throw new WorldOpenError('Scene file missing');
+    const seq = ++this.loadSeq;
     let group: THREE.Group;
     try {
       group = await parseGlb(bytes);
     } catch (e) {
+      if (seq !== this.loadSeq) return null;
       throw new WorldOpenError(`The scene could not be read: ${(e as Error).message ?? e}`);
+    }
+    if (seq !== this.loadSeq) {
+      disposeTree(group, this.blobGeometry, this.blobTexture);
+      return null;
+    }
+    group.updateWorldMatrix(true, true);
+    let made: ReturnType<typeof createRuntime>;
+    try {
+      made = createRuntime(doc, group, state);
+    } catch (e) {
+      disposeTree(group, this.blobGeometry, this.blobTexture);
+      throw e;
     }
     this.unload();
     this.world = group;
     this.scene.add(group);
-    group.updateWorldMatrix(true, true);
-    const made = createRuntime(doc, group, state);
     this.runtime = made.runtime;
 
     group.traverse((o) => {
@@ -486,17 +505,7 @@ export class WorldViewer {
     this.rides = [];
     this.focus = null;
     this.bodies.clear();
-    for (const root of [this.dynamicRoot, this.world]) {
-      root?.traverse((o) => {
-        const mesh = o as THREE.Mesh;
-        if (mesh.geometry !== this.blobGeometry) mesh.geometry?.dispose();
-        const material = mesh.material as THREE.Material | THREE.Material[] | undefined;
-        for (const m of Array.isArray(material) ? material : material ? [material] : []) {
-          for (const value of Object.values(m)) if ((value as THREE.Texture | null)?.isTexture) (value as THREE.Texture).dispose();
-          m.dispose();
-        }
-      });
-    }
+    for (const root of [this.dynamicRoot, this.world]) if (root) disposeTree(root, this.blobGeometry, this.blobTexture);
     this.dynamicRoot.clear();
     if (this.world) this.scene.remove(this.world);
     this.world = null;
@@ -713,6 +722,7 @@ export class WorldViewer {
       for (const [role, figure] of this.bodies) {
         if (rt.bodies.some((b) => b.role === role)) continue;
         this.dynamicRoot.remove(figure);
+        disposeTree(figure, this.blobGeometry, this.blobTexture);
         this.bodies.delete(role);
         moving = true;
       }
@@ -853,6 +863,22 @@ const lookAt = new THREE.Vector3();
 const vecOf = (p: ArrayLike<number>): THREE.Vector3 => new THREE.Vector3(p[0], p[1], p[2]);
 const eyeAt: Vec3 = [0, 0, 0];
 const glow = new THREE.Color(1, 0.62, 0.12);
+
+/**
+ * Frees what is under `root` on the GPU: geometries, materials and their textures. The contact
+ * shadow's geometry and alpha texture are shared by every blob of every world and stay.
+ */
+function disposeTree(root: THREE.Object3D, sharedGeometry: THREE.BufferGeometry, sharedTexture: THREE.Texture): void {
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (mesh.geometry !== sharedGeometry) mesh.geometry?.dispose();
+    const material = mesh.material as THREE.Material | THREE.Material[] | undefined;
+    for (const m of Array.isArray(material) ? material : material ? [material] : []) {
+      for (const value of Object.values(m)) if ((value as THREE.Texture | null)?.isTexture && value !== sharedTexture) (value as THREE.Texture).dispose();
+      m.dispose();
+    }
+  });
+}
 
 function sameMatrix(a: Float64Array, b: ArrayLike<number>): boolean {
   for (let i = 0; i < 16; i++) if (a[i] !== b[i]) return false;
