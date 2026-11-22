@@ -13,6 +13,21 @@ export type TrackState = 'idle' | 'loading' | 'playing' | 'paused' | 'error';
 
 type AudioContextCtor = new (opts?: AudioContextOptions) => AudioContext;
 
+/**
+ * iOS plays Web Audio in the "ambient" session by default, which the ringer switch mutes: the
+ * visual moves and nothing is heard. A page that plays music says so through Safari's
+ * `navigator.audioSession`, where it exists; elsewhere this does nothing.
+ */
+function audioSession(type: 'playback' | 'auto'): void {
+  const session = typeof navigator === 'undefined' ? undefined : (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
+  if (!session) return;
+  try {
+    session.type = type;
+  } catch {
+    // An unknown type on an older implementation: keep the default.
+  }
+}
+
 export interface TrackOptions {
   loop: boolean;
   loopSeconds: number | null;
@@ -69,12 +84,19 @@ export class MusicTrack {
     }
     // Resume first, synchronously inside the gesture (iOS needs this before any await).
     const resumed = this.ctx.resume();
+    audioSession('playback');
     if (!this.source) {
       this.set('loading');
       this.decoding ??= this.start();
-      return this.decoding.then(() => resumed).then(() => {
-        if (this.state === 'loading') this.set('playing');
-      });
+      return this.decoding
+        .then(() => resumed)
+        .then(
+          () => {
+            // Only a decoded, started track plays: after a failed decode there is no source.
+            if (this.state === 'loading' && this.source) this.set('playing');
+          },
+          (e: unknown) => this.fail(String(e)),
+        );
     }
     this.set('playing');
     return resumed.catch((e: unknown) => this.fail(String(e)));
@@ -83,6 +105,7 @@ export class MusicTrack {
   pause(): void {
     if (this.state !== 'playing' && this.state !== 'loading') return;
     void this.ctx?.suspend();
+    audioSession('auto');
     this.set('paused');
   }
 
@@ -113,8 +136,10 @@ export class MusicTrack {
       // never started
     }
     void this.ctx?.close().catch(() => undefined);
+    if (this.ctx) audioSession('auto');
     this.ctx = null;
     this.source = null;
+    this.decoding = null;
     this.state = 'idle';
   }
 
@@ -129,6 +154,8 @@ export class MusicTrack {
         if (p && typeof p.then === 'function') p.then(resolve, reject);
       });
     } catch (e) {
+      // Forget the failed attempt, so the next tap decodes again instead of "playing" nothing.
+      if (this.ctx === ctx) this.decoding = null;
       await this.fail(`The track could not be decoded: ${(e as Error)?.message ?? e}`);
       return;
     }
@@ -144,6 +171,7 @@ export class MusicTrack {
       if (this.source === source && !this.opts.loop) {
         this.source = null;
         this.decoding = null;
+        audioSession('auto');
         this.set('paused');
       }
     };

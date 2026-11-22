@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { buildPrecacheList, cacheNameFor } from '../vite-offline.js';
+import { buildPrecacheList, cacheNameFor, contentKeyFor } from '../vite-offline.js';
 
 const playerRoot = fileURLToPath(new URL('..', import.meta.url));
 const read = (rel: string) => readFileSync(`${playerRoot}/${rel}`, 'utf8');
@@ -10,6 +10,21 @@ describe('offline PWA (Phase One item 6)', () => {
   it('versions the cache name from the player package version', () => {
     expect(cacheNameFor('0.1.0')).toBe('wgif-player-v0.1.0');
     expect(cacheNameFor('0.2.0')).toBe('wgif-player-v0.2.0');
+  });
+
+  it('keys the cache name on what the build contains, so a deploy that only changes a sample world still updates installed players', () => {
+    const files = [
+      { path: 'index.html', bytes: new TextEncoder().encode('<html>') },
+      { path: 'samples/court.wgif', bytes: Uint8Array.from([1, 2, 3]) },
+    ];
+    const key = contentKeyFor(files);
+    expect(key).toMatch(/^[0-9a-f]{12}$/);
+    expect(contentKeyFor([...files].reverse())).toBe(key); // order of the walk does not matter
+    expect(contentKeyFor([files[0]!, { path: 'samples/court.wgif', bytes: Uint8Array.from([1, 2, 4]) }])).not.toBe(key);
+    expect(contentKeyFor([files[0]!, { path: 'samples/court2.wgif', bytes: Uint8Array.from([1, 2, 3]) }])).not.toBe(key);
+    expect(cacheNameFor('0.1.0', key)).toBe(`wgif-player-v0.1.0-${key}`);
+    // The worker's activate step deletes every other wgif-player-* cache, the old unkeyed one included.
+    expect(read('src/sw.ts')).toContain("name.startsWith('wgif-player-') && name !== CACHE_NAME");
   });
 
   it('precaches every emitted file except the worker and the Vite manifest', () => {

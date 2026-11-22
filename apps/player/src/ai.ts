@@ -27,6 +27,8 @@ const PICKUP_SLACK = 0.35;
 const CARRY_TIMEOUT_SEC = 8;
 /** Walking speed back to the stand-by post between rebounds. */
 const POST_SPEED = 2.5;
+/** Rounding allowance when summed ticks are compared with the model's period, seconds. */
+const TIME_EPSILON = 1e-9;
 const IDLE: NpcAction = { state: 'idle', velocity: [0, 0, 0], passBall: false, holdingBall: false, target: null };
 
 export interface NpcInfo {
@@ -46,8 +48,10 @@ export class RebounderAgent implements WorldAgent {
   private action: NpcAction = IDLE;
   private seenStep = 0;
   private pending: Promise<unknown> | null = null;
+  /** A model step is running (the hook answers through a Promise). */
+  private stepping = false;
   private carriedFor = 0;
-  /** Simulated time not yet handed to the hook. */
+  /** Simulated time since the hook was last asked for a step. */
   private clock = 0;
   /** Where the ball was left for a player who could not take it. The NPC leaves it alone while it stays there. */
   private parked: Vec3 | null = null;
@@ -139,19 +143,32 @@ export class RebounderAgent implements WorldAgent {
       if (world.carry(ball.id, [pos[0], pos[1] + CARRY_HEIGHT, pos[2]])) this.parked = null;
     }
 
-    // 4. Feed the hook at the model's own rate. Calling it on every 120 Hz tick would only build
-    //    observations and promises it throws away (PERF.md fix #7). It never overlaps two steps.
+    // 4. Feed the hook at the model's own rate, never faster (SPEC §6: players MUST NOT step a
+    //    model faster than its declared tickHz). The hook is handed exactly one period, so it steps
+    //    exactly once: handing it the whole elapsed time let its leftover add up to a second step,
+    //    which landed a frame after the first. A period that ends while a step is still running is
+    //    skipped, not queued. Calling the hook on every 120 Hz tick would only build observations
+    //    and promises it throws away (PERF.md fix #7).
     if (this.failed) return;
+    const period = 1 / this.hook.tickHz;
     this.clock += dt;
-    if (this.clock < 1 / this.info.tickHz) return;
-    const elapsed = this.clock;
+    // Twelve 1/120 s ticks add up to 0.09999999999999999, not 0.1: allow for the rounding.
+    if (this.clock < period - TIME_EPSILON) return;
     this.clock = 0;
-    const pending = this.hook.tick(elapsed, this.observe(world, ball)).catch((error: unknown) => {
-      // A model error must never stop the world: the NPC stands still from here on.
-      this.failed = error instanceof Error ? error : new Error(String(error));
-      this.hook.dispose();
-      if (ball.heldBy === this.role) world.release(ball.id);
-    });
+    if (this.stepping) return;
+    this.stepping = true;
+    const pending = this.hook.tick(period, this.observe(world, ball)).then(
+      () => {
+        this.stepping = false;
+      },
+      (error: unknown) => {
+        this.stepping = false;
+        // A model error must never stop the world: the NPC stands still from here on.
+        this.failed = error instanceof Error ? error : new Error(String(error));
+        this.hook.dispose();
+        if (ball.heldBy === this.role) world.release(ball.id);
+      },
+    );
     this.pending = pending;
   }
 

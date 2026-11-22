@@ -115,6 +115,16 @@ describe('0007 #1: trigger semantics (on.enter, on.grab, score / reset / activat
     const { doc } = await open(await courtWith(extra));
     expect(doc.warnings.some((w) => w.includes('on.grab on a trigger') && w.includes('unsupported'))).toBe(true);
   });
+
+  it('a free-form interactions[] entry is a warning, never a trigger refusal', async () => {
+    // A trigger world with an entry type from some newer player: its triggers all run here.
+    const court = await unpackWgif(courtBytes());
+    const raw = readJson(court.files['interactions.json']) as Json;
+    const files = { 'interactions.json': utf8(JSON.stringify({ ...raw, interactions: [{ type: 'hologram', id: 'h1' }] })) };
+    const { doc } = await open(await courtVariant({ files, requires: ['scene.glb', 'runtime.rules', 'interaction.trigger'] }));
+    expect(doc.interactions.unsupported).toEqual([]);
+    expect(doc.warnings).toContain('interactions: interactions[] (1 free-form entry) has no defined behaviour in v0.1, ignored');
+  });
 });
 
 describe('0007 #2: initial game state fields are applied or reported, never silently ignored', () => {

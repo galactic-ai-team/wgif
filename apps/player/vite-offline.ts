@@ -1,11 +1,26 @@
+import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Plugin } from 'vite';
 
-/** The service-worker cache name for a player build, versioned from the player package. */
-export function cacheNameFor(version: string): string {
-  return `wgif-player-v${version}`;
+/**
+ * The service-worker cache name for a player build: the player package version, plus a key of
+ * what the build contains. The version alone never changes between deploys (0.1.0), so the old
+ * cache was never dropped (every deploy's chunks piled up) and a deploy that only changed a sample
+ * world left sw.js byte-identical, so installed players kept serving the old world cache-first.
+ */
+export function cacheNameFor(version: string, contentKey?: string): string {
+  return `wgif-player-v${version}${contentKey ? `-${contentKey}` : ''}`;
+}
+
+/** A short key of the precached files' paths and bytes: any change to any of them changes it. */
+export function contentKeyFor(files: Iterable<{ path: string; bytes: Uint8Array }>): string {
+  const hash = createHash('sha256');
+  for (const f of [...files].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))) {
+    hash.update(f.path).update('\0').update(String(f.bytes.byteLength)).update('\0').update(f.bytes);
+  }
+  return hash.digest('hex').slice(0, 12);
 }
 
 /**
@@ -43,7 +58,6 @@ export function buildPrecacheList(fileNames: Iterable<string>): string[] {
 export function offlinePrecachePlugin(): Plugin {
   const playerRoot = resolve(fileURLToPath(new URL('.', import.meta.url)));
   const pkg = JSON.parse(readFileSync(resolve(playerRoot, 'package.json'), 'utf8')) as { version: string };
-  const cacheName = cacheNameFor(pkg.version);
   return {
     name: 'wgif-offline-precache',
     writeBundle(options) {
@@ -64,6 +78,8 @@ export function offlinePrecachePlugin(): Plugin {
         }
       };
       walk(distDir, '');
+      const precached = files.filter((f) => f !== 'sw.js' && f !== '.vite/manifest.json' && f !== 'manifest.json');
+      const cacheName = cacheNameFor(pkg.version, contentKeyFor(precached.map((path) => ({ path, bytes: readFileSync(resolve(distDir, path)) }))));
       const injected = code
         .replace('__WGIF_CACHE_NAME__', cacheName)
         .replace('__WGIF_PRECACHE_URLS__', JSON.stringify(buildPrecacheList(files)));

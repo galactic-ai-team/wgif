@@ -120,6 +120,9 @@ function parse(b: Uint8Array, limits: Required<GifLimits>): { width: number; hei
       const w = b[p + 4]! | (b[p + 5]! << 8), h = b[p + 6]! | (b[p + 7]! << 8);
       const f = b[p + 8]!;
       p += 9;
+      // The pixel buffer for a frame is w x h, whatever the screen size: a frame claiming
+      // 65535 x 65535 would ask for 4 GB. A real frame fits its screen, which is already capped.
+      if (w * h > limits.maxPixels) throw new GifError(`a GIF frame is too big (${w}×${h})`);
       let palette = global;
       if (f & 0x80) {
         const n = 3 * (1 << ((f & 7) + 1));

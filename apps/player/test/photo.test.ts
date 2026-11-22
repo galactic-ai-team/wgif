@@ -101,6 +101,15 @@ describe('GIF decoding', () => {
     expect(() => decodeGif(gif, { maxPixels: 100 })).toThrow(/too big/);
     expect(() => decodeGif(gif.subarray(0, 40))).toThrow();
   });
+
+  it('refuses a frame that claims far more pixels than its screen, before allocating for it', () => {
+    // A 16x16 screen whose one frame claims 65535x65535 (4 GB of indices) with 3 bytes of data.
+    const hostile = Uint8Array.from([
+      0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 16, 0, 16, 0, 0x80, 0, 0, 0, 0, 0, 255, 255, 255,
+      0x2c, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0, 2, 2, 0x4c, 0x01, 0, 0x3b,
+    ]);
+    expect(() => decodeGif(hostile)).toThrow(/frame is too big \(65535×65535\)/);
+  });
 });
 
 describe('depth to mesh', () => {
@@ -328,5 +337,9 @@ describe('phone policy: the creator defaults to Flat on a phone-class device', (
   });
   it('does not treat an unknown deviceMemory as a small phone', () => {
     expect(shouldDefaultFlat({ ...base, deviceMemoryGb: undefined })).toBe(false);
+  });
+  it('defaults to Flat when offline and the model is not stored yet, on any device; 3D when it is', () => {
+    expect(shouldDefaultFlat({ ...base, deviceMemoryGb: 16, offline: true })).toBe(true);
+    expect(shouldDefaultFlat({ ...base, deviceMemoryGb: 16, offline: true, cached: true })).toBe(false);
   });
 });

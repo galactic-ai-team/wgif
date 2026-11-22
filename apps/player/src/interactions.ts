@@ -415,7 +415,9 @@ export function parseInteractions(raw: unknown): { interactions: Interactions; w
       else if (ph) out.photos.push(ph);
     } else freeForm++;
   }
-  if (freeForm > 0) unsupported(`interactions[] (${freeForm} free-form entr${freeForm === 1 ? 'y' : 'ies'}) has no defined behaviour in v0.1`);
+  // A plain warning, not a trigger refusal: these entries are not trigger behaviour, and a world
+  // that requires interaction.trigger must not be refused because a newer player added a type.
+  if (freeForm > 0) warn(`interactions[] (${freeForm} free-form entr${freeForm === 1 ? 'y' : 'ies'}) has no defined behaviour in v0.1, ignored`);
 
   if (isJson(raw.colliders) && Array.isArray(raw.colliders.static)) {
     out.staticColliders = [...new Set(list(raw.colliders.static).map(str).filter((s): s is string => s !== null))];
