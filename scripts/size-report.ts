@@ -260,6 +260,20 @@ const PRECOMPRESSED =
 const AUDIO_ENTRY =
   /\.(mp3|ogg|opus|m4a|aac|wav|flac|webm|oga)$/i;
 
+/**
+ * Phase One budget for one world entry: an explicit worldEntryBytes ceiling
+ * wins, then audio entries get audioEntryBytes, everything else the default.
+ * Shared by the check, the markdown report and the CLI listing so they agree.
+ */
+export function entryBudget(budgets: Budgets, name: string): number {
+  return (
+    budgets.worldEntryBytes[name] ??
+    (AUDIO_ENTRY.test(name)
+      ? budgets.audioEntryBytes
+      : budgets.worldEntryDefaultBytes)
+  );
+}
+
 const SKIP_DIRS = new Set([
   "node_modules",
   ".git",
@@ -674,9 +688,7 @@ export function checkPhaseOneBudgets(
     }
     // Entry-count is spec §2 exactly, checked in checkSpecLimits.
     for (const e of w.entries) {
-      const limit =
-        budgets.worldEntryBytes[e.name] ??
-        (AUDIO_ENTRY.test(e.name) ? budgets.audioEntryBytes : budgets.worldEntryDefaultBytes);
+      const limit = entryBudget(budgets, e.name);
       if (e.expandedBytes > limit) {
         v.push({
           id: `world.entry:${e.name}`,
@@ -881,8 +893,7 @@ export function renderMarkdown(
       L.push("| Entry | Method | Stored | Expanded | Budget | Status |");
       L.push("|---|---|---:|---:|---:|---:|");
       for (const e of w.entries) {
-        const limit =
-          budgets.worldEntryBytes[e.name] ?? budgets.worldEntryDefaultBytes;
+        const limit = entryBudget(budgets, e.name);
         L.push(
           `| \`${e.name}\` | ${e.method === 8 ? "deflate" : e.method === 0 ? "store" : e.method} | ` +
             `${formatBytes(e.storedBytes)} | ${formatBytes(e.expandedBytes)} | ${formatBytes(limit)} | ` +
@@ -1113,8 +1124,7 @@ export function main(argv: string[], cwd: string): number {
         `${w.path}: ${formatBytes(w.totalBytes)} (budget ${formatBytes(budgets.worldTotalBytes)})`,
       );
       for (const e of w.entries) {
-        const limit =
-          budgets.worldEntryBytes[e.name] ?? budgets.worldEntryDefaultBytes;
+        const limit = entryBudget(budgets, e.name);
         console.log(
           `  ${e.name.padEnd(28)} ${formatBytes(e.expandedBytes).padStart(10)}  / ${formatBytes(limit)}`,
         );

@@ -11,6 +11,7 @@ import path from "node:path";
 import {
   checkBudgets,
   checkPhaseOneBudgets,
+  entryBudget,
   checkSpecLimits,
   computeInitialFiles,
   formatBytes,
@@ -505,6 +506,13 @@ describe("checkPhaseOneBudgets", () => {
     const entries = [mkEntry("assets/music.mp3", BUDGETS.audioEntryBytes + 1)];
     const ids = checkPhaseOneBudgets(makeReport([makeWorld({ entries })]), BUDGETS).map((v) => v.id);
     expect(ids).toContain("world.entry:assets/music.mp3");
+  });
+
+  it("entryBudget: named ceiling, then audio, then default (shared by report + CLI)", () => {
+    expect(entryBudget(BUDGETS, "preview.png")).toBe(256);
+    expect(entryBudget(BUDGETS, "assets/Track.MP3")).toBe(BUDGETS.audioEntryBytes);
+    expect(entryBudget(BUDGETS, "assets/clip.opus")).toBe(BUDGETS.audioEntryBytes);
+    expect(entryBudget(BUDGETS, "assets/data.bin")).toBe(BUDGETS.worldEntryDefaultBytes);
   });
 });
 
