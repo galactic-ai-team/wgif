@@ -145,6 +145,12 @@ async function reopen(browser, ctxOpts, file) {
   return { ...r, errors };
 }
 
+/** Vercel preview deployments add a feedback toolbar that sits over the page; hide it. */
+const hideToolbar = (ctx) => ctx.addInitScript(() => {
+  const css = 'vercel-live-feedback { display: none !important; pointer-events: none !important; }';
+  document.addEventListener('DOMContentLoaded', () => document.head.append(Object.assign(document.createElement('style'), { textContent: css })));
+});
+
 const browser = await chromium.launch({ executablePath: chrome, headless: true, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
 try {
   for (const [label, ctxOpts] of [
@@ -155,6 +161,7 @@ try {
     const tag = `img3d ${label}`;
     const pre = phone ? 'img3d-390x844' : 'img3d';
     const ctx = await browser.newContext(ctxOpts);
+    await hideToolbar(ctx);
     const page = await ctx.newPage();
     const errors = [];
     page.on('pageerror', (e) => errors.push(String(e)));
@@ -226,6 +233,7 @@ try {
 
   if (real) {
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, acceptDownloads: true });
+    await hideToolbar(ctx);
     const page = await ctx.newPage();
     const errors = [];
     page.on('pageerror', (e) => errors.push(String(e)));
