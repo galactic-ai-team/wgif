@@ -167,7 +167,7 @@ async function loadRuntime(backend: 'webgpu' | 'wasm', onProgress: (p: Progress)
   ]);
   const ort = (await import(/* @vite-ignore */ blobUrl(main, 'text/javascript'))) as Ort;
   ort.env.wasm.numThreads = globalThis.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 1) : 1;
-  ort.env.wasm.proxy = false;
+  ort.env.wasm.proxy = true;
   ort.env.wasm.wasmPaths = { mjs: blobUrl(glue, 'text/javascript') };
   ort.env.wasm.wasmBinary = wasm;
   ort.env.logLevel = 'error';
