@@ -85,6 +85,17 @@ describe('GIF decoding', () => {
     expect(lzwDecode(new Uint8Array(0), 2, 4)).toEqual(new Uint8Array(4));
   });
 
+  it('maxSide downscales kept frames at decode time; default keeps native size', () => {
+    const big = encodeAnimatedGif89a(200, 120, palette, [new Uint8Array(200 * 120).fill(5), new Uint8Array(200 * 120).fill(9)], 8);
+    const native = decodeGif(big);
+    expect(native.frames.map((f) => [f.width, f.height, f.rgba.length])).toEqual([[200, 120, 200 * 120 * 4], [200, 120, 200 * 120 * 4]]);
+    const capped = decodeGif(big, { maxSide: 50 });
+    expect([capped.width, capped.height]).toEqual([200, 120]);
+    expect(capped.frames.map((f) => [f.width, f.height, f.rgba.length])).toEqual([[50, 30, 50 * 30 * 4], [50, 30, 50 * 30 * 4]]);
+    expect(Array.from(capped.frames[1]!.rgba.subarray(0, 4))).toEqual([palette[27], palette[28], palette[29], 255]);
+    expect(decodeGif(big, { maxSide: 512 }).frames[0]!.width).toBe(200);
+  });
+
   it('refuses what is not a GIF, and oversized ones', () => {
     expect(() => decodeGif(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]))).toThrow(/not a GIF/);
     expect(() => decodeGif(gif, { maxPixels: 100 })).toThrow(/too big/);

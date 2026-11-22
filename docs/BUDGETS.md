@@ -24,6 +24,7 @@ Change a budget in one place: the JSON.
 | `world.glb` | 768 KiB | — | — |
 | `manifest.json` | 16 KiB | — | — |
 | `interactions.json`, `game-state.json` | 32 KiB each | — | — |
+| audio entry (`.mp3` `.ogg` `.opus` `.m4a` `.aac` `.wav` `.flac` `.webm` `.oga`, unless named above) | 512 KiB | 227.2 KiB (`music.wgif`) | 2.25× |
 | any other entry | 256 KiB | — | — |
 | entries per world | 256 | — | — |
 | **uncompressed total per world** | **16 MiB** | — | — |
@@ -33,8 +34,8 @@ Change a budget in one place: the JSON.
 | runtime WASM/models gzip (Phase One) | **0 B** | 0 B | — |
 | player dist total gzip (excl. `.map`, runtime WASM and bundled sample `.wgif` worlds, which are content held to the per-world budgets) | 1.5 MiB | — | — |
 
-Unknown entry names fall back to the 256 KiB default, so a new asset type
-cannot sneak in unbounded.
+Unknown entry names fall back to the 256 KiB default (audio entries to the
+512 KiB `audioEntryBytes`), so a new asset type cannot sneak in unbounded.
 
 ### Initial vs deferred
 

@@ -1,6 +1,6 @@
 {
   "$comment": "Single source of truth for Phase One size budgets. Human-readable mirror: docs/BUDGETS.md. Bytes unless stated. Changing a number here changes CI.",
-  "version": 4,
+  "version": 5,
   "worldTotalBytes": 1048576,
   "worldEntryBytes": {
     "manifest.json": 16384,
@@ -10,6 +10,7 @@
     "game-state.json": 32768
   },
   "worldEntryDefaultBytes": 262144,
+  "audioEntryBytes": 524288,
   "playerInitialJsGzipBytes": 307200,
   "playerDeferredChunkGzipBytes": 524288,
   "playerDistGzipBytes": 1572864,
