@@ -238,6 +238,59 @@ function quadMesh(c: [number, number, number], w: number, h: number): MeshData {
 
 // ---- the world ---------------------------------------------------------------------------------
 
+export interface PhotoFramingAndBackdrop {
+  floorY: number;
+  floorColor: [number, number, number];
+  skyColor: [number, number, number];
+  pivotDistance: number;
+}
+
+/**
+ * Derives seamless floor height, edge-matched backdrop colors, and median-depth
+ * orbit pivot directly from the source picture and generated mesh positions.
+ */
+export function computePhotoFramingAndBackdrop(
+  rgba: ArrayLike<number>,
+  width: number,
+  height: number,
+  positions: Float32Array,
+  gridCols: number,
+  gridRows: number,
+  near = 3,
+  k = 1.6,
+  medianDisparity = 0.5,
+): PhotoFramingAndBackdrop {
+  const sampleBand = (yStart: number, yEnd: number, darken: number): [number, number, number] => {
+    let r = 0, g = 0, b = 0, n = 0;
+    for (let y = yStart; y < yEnd; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = (y * width + x) * 4;
+        r += rgba[i] ?? 0;
+        g += rgba[i + 1] ?? 0;
+        b += rgba[i + 2] ?? 0;
+        n++;
+      }
+    }
+    if (n === 0) return [0.05, 0.05, 0.07];
+    const s = darken / (255 * n);
+    return [r * s, g * s, b * s];
+  };
+
+  const bandRows = Math.max(1, Math.floor(height * 0.05));
+  const skyColor = sampleBand(0, bandRows, 0.42);
+  const floorColor = sampleBand(height - bandRows, height, 0.35);
+
+  let bottomMinY = Infinity;
+  const lastRowOffset = (gridRows - 1) * gridCols;
+  for (let c = 0; c < gridCols; c++) {
+    const y = positions[(lastRowOffset + c) * 3 + 1]!;
+    if (y < bottomMinY) bottomMinY = y;
+  }
+  const floorY = Number.isFinite(bottomMinY) ? bottomMinY - 0.02 : 0;
+  const pivotDistance = (near * (1 + k)) / (1 + k * clamp(medianDisparity, 0, 1));
+  return { floorY, floorColor, skyColor, pivotDistance };
+}
+
 interface Scene {
   nodes: GlbNode[];
   materials: GlbMaterial[];
@@ -248,36 +301,51 @@ interface Scene {
   cut: number;
   vertices: number;
   alsoNodes: string[];
+  backdrop?: { sky: [number, number, number]; floor: [number, number, number] };
 }
 
-function scene3d(depth: DepthMap | null, aspect: number, strength: number, edge: EdgeMode, detail: number): Scene {
+function scene3d(first: Picture, depth: DepthMap | null, aspect: number, strength: number, edge: EdgeMode, detail: number): Scene {
   // First pass at a dummy eye to learn how far down the far edge goes, then lift the eye so the
-  // whole picture stands on the floor (y = 0).
+  // whole picture stands cleanly above the floor.
   const probe = buildPhotoMesh(depth, { aspect, strength, edge, detail: 4 });
   const tanY = Math.tan((50 * Math.PI) / 360);
   const farZ = probe.back ? probe.far * 1.04 : 3;
   const eyeY = tanY * farZ + 0.05;
   const m = buildPhotoMesh(depth, { aspect, strength, edge, detail, eye: [0, eyeY, 0] });
+  const backdrop = computePhotoFramingAndBackdrop(
+    first.rgba,
+    first.width,
+    first.height,
+    m.surface.positions,
+    m.cols + 1,
+    m.rows + 1,
+    3,
+    1.6 * strength,
+  );
+  // The bottom image row is not always the lowest part of the mesh (a near object across the bottom
+  // with far ground above it dips lower), so never let the floor cut through the picture.
+  const floorY = Math.min(backdrop.floorY, m.surface.min[1] - 0.02);
   const radius = Math.max(6, farZ * 1.1);
   const nodes: GlbNode[] = [
     { name: PHOTO_NODE, mesh: m.surface, material: 0 },
-    { name: 'floor', mesh: discMesh(0, -farZ * 0.55, 0, radius), material: 2, extras: { wgif: { collider: 'static' } } },
+    { name: 'floor', mesh: discMesh(0, -farZ * 0.55, floorY, radius), material: 2, extras: { wgif: { collider: 'static' } } },
   ];
   if (m.back) nodes.splice(1, 0, { name: BACK_NODE, mesh: m.back, material: 1 });
   return {
     nodes,
     materials: [
       { name: 'photo', color: [1, 1, 1, 1], glow: 0, doubleSided: true },
-      { name: 'photo_back', color: [0.32, 0.32, 0.36, 1], glow: 0, doubleSided: true },
-      { name: 'floor', color: [0.05, 0.05, 0.07, 1], rough: 0.95 },
+      { name: 'photo_back', color: [0.22, 0.22, 0.25, 1], glow: 0, doubleSided: true },
+      { name: 'floor', color: [...backdrop.floorColor, 1], rough: 0.95 },
     ],
     focus: m.focus,
     eye: m.eye,
-    bounds: { min: [-radius, 0, -farZ * 0.55 - radius], max: [radius, eyeY * 2 + 4, radius] },
+    bounds: { min: [-radius, floorY, -farZ * 0.55 - radius], max: [radius, eyeY * 2 + 4, radius] },
     statics: ['floor'],
     cut: m.cut,
     vertices: m.surface.positions.length / 3,
     alsoNodes: m.back ? [BACK_NODE] : [],
+    backdrop: { sky: backdrop.skyColor, floor: backdrop.floorColor },
   };
 }
 
@@ -377,7 +445,7 @@ export async function buildPhotoWorld(input: PhotoWorldInput, codec: ImageCodec)
     ? [[112, 1024, 0.85], [112, 1024, 0.75], [100, 896, 0.75], [96, 768, 0.72], [80, 640, 0.7], [64, 512, 0.7]]
     : [[0, 1280, 0.86], [0, 1024, 0.8], [0, 896, 0.75], [0, 768, 0.7], [0, 512, 0.7]];
   for (const [detail, long, q] of tries) {
-    sc = mode === '3d' ? scene3d(input.depth, aspect, strength, edge, detail) : sceneFlat(aspect);
+    sc = mode === '3d' ? scene3d(first, input.depth, aspect, strength, edge, detail) : sceneFlat(aspect);
     const tex = await codec.encode(fit(first, animated ? Math.min(long, 768) : long), 'image/jpeg', q);
     glb = writeGlb(sc.nodes, sc.materials, [tex], 'wgif-player photo creator 0.1');
     if (glb.length <= BUDGET.glb - 8192 && used() + glb.length <= BUDGET.total - BUDGET.preview - 32 * 1024) break;
@@ -397,6 +465,7 @@ export async function buildPhotoWorld(input: PhotoWorldInput, codec: ImageCodec)
 
   const photo: Record<string, unknown> = { type: 'photo', id: 'photo', node: PHOTO_NODE, focus: round3(sc.focus), eye: round3(sc.eye) };
   if (sc.alsoNodes.length) photo.alsoNodes = sc.alsoNodes;
+  if (sc.backdrop) photo.backdrop = { sky: round3(sc.backdrop.sky), floor: round3(sc.backdrop.floor) };
   if (framesEntry) photo.frames = framesEntry;
   const interactions = {
     version: '0.1',

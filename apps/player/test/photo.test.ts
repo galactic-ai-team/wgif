@@ -198,10 +198,28 @@ describe('the photo world export', () => {
     const node = opened.scene.getObjectByName('photo') as unknown as { geometry: { attributes: { position: { array: Float32Array } } } };
     const z = Array.from(node.geometry.attributes.position.array).filter((_, i) => i % 3 === 2);
     expect(Math.max(...z) - Math.min(...z)).toBeGreaterThan(1);
-    // The walker stands on the floor.
+    // The walker stands on the floor, which now sits just below the bottom of the picture mesh.
+    const ys = (name: string): number[] => {
+      const g = opened.scene.getObjectByName(name) as unknown as { geometry: { attributes: { position: { array: Float32Array } } } };
+      return Array.from(g.geometry.attributes.position.array).filter((_, i) => i % 3 === 1);
+    };
+    const floorY = Math.min(...ys('floor'));
+    expect(floorY).toBeCloseTo(Math.min(...ys('photo')) - 0.02, 2);
     run(opened.runtime, 1);
-    expect(opened.runtime.player.feet[1]).toBeGreaterThan(-0.05);
-    expect(opened.runtime.player.feet[1]).toBeLessThan(0.3);
+    expect(opened.runtime.player.feet[1]).toBeGreaterThan(floorY - 0.05);
+    expect(opened.runtime.player.feet[1]).toBeLessThan(floorY + 0.3);
+  });
+
+  it('never puts the floor above any part of the picture (near object across the bottom, far ground above it)', async () => {
+    const w = 64, h = 48, data = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) data[y * w + x] = y > h * 0.85 ? 1 : 0.1;
+    const made = await buildPhotoWorld({ frames: [picture()], depth: { width: w, height: h, data }, mode: '3d', sourceName: 'table.png', created: '2026-11-22T00:00:00Z' }, pngCodec);
+    const opened = await open(made.bytes);
+    const ys = (name: string): number[] => {
+      const g = opened.scene.getObjectByName(name) as unknown as { geometry: { attributes: { position: { array: Float32Array } } } };
+      return Array.from(g.geometry.attributes.position.array).filter((_, i) => i % 3 === 1);
+    };
+    expect(Math.max(...ys('floor'))).toBeLessThan(Math.min(...ys('photo')));
   });
 
   it('a GIF becomes an animated world with a frame sheet; the flat mode is a room', async () => {
