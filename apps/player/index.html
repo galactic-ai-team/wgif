@@ -17,6 +17,7 @@
       <div class="brand">🌌 <strong>WGIF Player</strong> <span class="muted">v0.1 proof</span></div>
       <div class="actions">
         <label class="btn" for="file">Open .wgif<input id="file" type="file" hidden /></label>
+        <button class="btn" id="create" type="button" aria-label="Create from image">🖼 <span class="wide">Create from image</span><span class="narrow">Create</span></button>
         <button class="btn" id="mode" type="button" disabled>Mode: Orbit</button>
         <button class="btn primary" id="drive" type="button" aria-pressed="false" hidden>🚗 Drive</button>
         <button class="btn primary" id="play" type="button" hidden>▶ Shootout</button>
@@ -29,6 +30,8 @@
         <div id="empty" class="overlay">
           <p><strong>Drop a .wgif file here</strong></p>
           <p class="muted">or use “Open .wgif”. Everything runs locally in your browser.</p>
+          <p><button class="btn primary" id="create-empty" type="button">🖼 Create from image or GIF</button></p>
+          <p class="muted small">Turn a photo or GIF into a 3D scene you can orbit, then save it as a .wgif.</p>
         </div>
         <div id="refused" class="overlay" hidden>
           <img id="refused-preview" alt="Preview of the world that could not be opened" hidden />
@@ -37,6 +40,25 @@
           <button id="refused-back" type="button" hidden>Back to the open world</button>
         </div>
         <div id="drop" class="overlay drop" hidden>Release to open</div>
+
+        <div id="img-creator" class="panel" role="dialog" aria-label="Create from image" hidden>
+          <div class="cr-head"><strong>Create from image</strong><button class="btn" id="cr-close" type="button" aria-label="Close the creator">✕</button></div>
+          <label class="btn primary cr-pick" for="cr-file">Choose a photo or GIF<input id="cr-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/*" hidden /></label>
+          <p id="cr-name" class="muted"></p>
+          <div class="cr-mode" role="radiogroup" aria-label="Kind of scene">
+            <label><input type="radio" name="cr-mode" value="3d" checked /> 3D (AI depth)</label>
+            <label><input type="radio" name="cr-mode" value="flat" /> Flat screen</label>
+          </div>
+          <p id="cr-note" class="muted small"></p>
+          <label class="cr-row">Depth <input id="cr-strength" type="range" min="0" max="200" value="100" aria-label="Depth strength" /></label>
+          <label class="cr-row"><input id="cr-cut" type="checkbox" checked /> Cut at depth edges</label>
+          <div class="cr-actions">
+            <button class="btn primary" id="cr-make" type="button" disabled>Make 3D</button>
+            <button class="btn" id="cr-save" type="button" hidden>Save .wgif</button>
+          </div>
+          <p id="cr-status" aria-live="polite"></p>
+          <div id="cr-progress" hidden><div></div></div>
+        </div>
 
         <div id="scoreboard" hidden>
           <span class="cell"><small>time</small><b id="hud-time">60</b></span>

@@ -281,7 +281,48 @@ async function mount(view: WorldDocument, state: GameState, keepPose = false): P
     $<HTMLInputElement>('ed-points').value = String(rules.pointsPerBasket);
   }
   await setupMusic(view);
+  await setupPhoto(view);
 }
+
+/** A picture world (interactions[] type "photo"): true colours, and a GIF's animation. Its own small chunk. */
+async function setupPhoto(view: WorldDocument): Promise<void> {
+  const def = view.interactions.photos[0];
+  if (!viewer || !session || !def) return;
+  const warnings = session.warnings;
+  try {
+    const { mountPhoto } = await import('./photo/player.js');
+    await mountPhoto(viewer, def, def.frames ? view.world.files[def.frames.file] ?? null : null, (m) => warnings.push(m));
+  } catch (e) {
+    warnings.push(`photo: the picture player could not load (${(e as Error).message ?? e})`);
+  }
+}
+
+// ---- create from image ------------------------------------------------------------------------
+
+type CreatorApi = import('./photo/creator.js').Creator;
+let creator: Promise<CreatorApi> | null = null;
+let creatorApi: CreatorApi | null = null;
+
+/** Opens the "Create from image" panel (its code and everything behind it load only now). */
+function openCreator(file?: File): void {
+  creator ??= import('./photo/creator.js').then(({ createCreator }) =>
+    createCreator({
+      open: openBytes,
+      preview: renderPreview,
+      save: (bytes, fileName) => void shareOrDownload(new File([bytes as Uint8Array<ArrayBuffer>], fileName, { type: WGIF_MEDIA_TYPE }), bytes, WGIF_MEDIA_TYPE),
+      notify: (m, kind) => (kind === 'error' ? showError(m) : notify(m)),
+    }),
+  );
+  creator.then((c) => {
+    creatorApi = c;
+    c.show(file);
+  }, (e: unknown) => {
+    creator = null;
+    showError(`The creator could not load: ${(e as Error).message ?? e}`);
+  });
+}
+
+const isImageFile = (f: File): boolean => /^image\/(png|jpe?g|webp|gif|heic|heif|avif|bmp)$/i.test(f.type) || /\.(png|jpe?g|webp|gif|heic|avif|bmp)$/i.test(f.name);
 
 /**
  * A world with a music track (interactions[] type "audio") gets its player, visual and controls.
@@ -732,7 +773,8 @@ async function openShared(): Promise<void> {
 
 fileInput.addEventListener('change', () => {
   const f = fileInput.files?.[0];
-  if (f) void openFile(f);
+  if (f && isImageFile(f)) openCreator(f);
+  else if (f) void openFile(f);
   fileInput.value = '';
 });
 
@@ -796,8 +838,11 @@ window.addEventListener('drop', (e) => {
   dragDepth = 0;
   drop.hidden = true;
   const f = e.dataTransfer?.files?.[0];
-  if (f) void openFile(f);
+  if (f && isImageFile(f)) openCreator(f);
+  else if (f) void openFile(f);
 });
+$('create').addEventListener('click', () => openCreator());
+$('create-empty').addEventListener('click', () => openCreator());
 
 // Saves are written a moment after a change; make sure the last one lands before the page goes away.
 const flush = (): void => void session?.saver.flush();
@@ -837,6 +882,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
     get runtime() { return viewer?.runtime ?? null; },
     get session() { return session; },
     get music() { return music; },
+    get creator() { return creatorApi; },
     setMode,
     setEditing,
     toggleDrive,

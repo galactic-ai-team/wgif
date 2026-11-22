@@ -104,6 +104,8 @@ export class WorldViewer {
   driveSource: { readonly drive: DriveInput } | null = null;
   private flashes: Flash[] = [];
   private extras: FrameExtra[] = [];
+  /** An exact camera for snapshots (a photo world's turned view), instead of the overview formula. */
+  private snapPose: { position: THREE.Vector3; target: THREE.Vector3; fov: number } | null = null;
   private overview = { position: new THREE.Vector3(0, 4.7, 14), target: new THREE.Vector3(0, 1, 0) };
   /** What the overview frames (side it is seen from, width across), so a snapshot can frame it for its own shape. */
   private framing = { side: new THREE.Vector3(0, 0, 1), width: 10 };
@@ -190,11 +192,16 @@ export class WorldViewer {
     if (!this.world) return null;
     // Framed like the landscape overview (70° vertical field, whole world across), whatever shape the screen is.
     const aspect = width / height;
-    const camera = new THREE.PerspectiveCamera(70, aspect, this.camera.near, this.camera.far);
-    const reach = Math.max(2, (this.framing.width / 2 / (Math.tan(THREE.MathUtils.degToRad(35)) * Math.min(Math.max(aspect, 0.4), 1.6))) * 1.05);
-    const tilt = THREE.MathUtils.degToRad(30);
-    camera.position.copy(this.overview.target).addScaledVector(this.framing.side, Math.cos(tilt) * reach).add(new THREE.Vector3(0, Math.sin(tilt) * reach, 0));
-    camera.lookAt(this.overview.target);
+    const camera = new THREE.PerspectiveCamera(this.snapPose?.fov ?? 70, aspect, this.camera.near, this.camera.far);
+    if (this.snapPose) {
+      camera.position.copy(this.snapPose.position);
+      camera.lookAt(this.snapPose.target);
+    } else {
+      const reach = Math.max(2, (this.framing.width / 2 / (Math.tan(THREE.MathUtils.degToRad(35)) * Math.min(Math.max(aspect, 0.4), 1.6))) * 1.05);
+      const tilt = THREE.MathUtils.degToRad(30);
+      camera.position.copy(this.overview.target).addScaledVector(this.framing.side, Math.cos(tilt) * reach).add(new THREE.Vector3(0, Math.sin(tilt) * reach, 0));
+      camera.lookAt(this.overview.target);
+    }
     camera.updateProjectionMatrix();
     const shown = { markers: this.markers.visible, arc: this.arc.visible };
     const ratio = this.renderer.getPixelRatio();
@@ -256,7 +263,7 @@ export class WorldViewer {
       if (vehicle) this.bindVehicle(vehicle, def, group);
     }
     // PERF.md fix #1: what never moves becomes a few draw calls. Objects and the props that light up keep their own nodes.
-    const keep = new Set<string>([...doc.interactions.objects.map((o) => o.node ?? o.id), ...made.built.props, ...doc.interactions.audio.flatMap((a) => a.react.map((r) => r.node))]);
+    const keep = new Set<string>([...doc.interactions.objects.map((o) => o.node ?? o.id), ...made.built.props, ...doc.interactions.audio.flatMap((a) => a.react.map((r) => r.node)), ...doc.interactions.photos.flatMap((ph) => [ph.node, ...ph.alsoNodes])]);
     // A world's own sky (extras.wgif.role "sky") stays out of the overview framing and the shadow box.
     const box = sceneBounds(group);
     this.merged = mergeStatic(group, (o) => keep.has(nodeName(o)) || isSky(o));
@@ -308,6 +315,26 @@ export class WorldViewer {
       this.framing = { side: side.clone(), width: w };
       this.overview.target.copy(at);
       this.overview.position.copy(at).addScaledVector(side, Math.cos(tilt) * r).add(new THREE.Vector3(0, Math.sin(tilt) * r, 0));
+    }
+    // A picture rebuilt in 3D starts from the eye it was taken from (so it first looks just like
+    // the picture) and orbits around its middle distance; its preview is a small turn to one side.
+    const photo = ride || vis ? null : doc.interactions.photos[0];
+    this.snapPose = null;
+    if (photo) {
+      const focus = new THREE.Vector3(...photo.focus);
+      const eye = photo.eye ? new THREE.Vector3(...photo.eye) : focus.clone().addScaledVector(side, 6);
+      if (eye.distanceToSquared(focus) < 1e-4) eye.z += 4;
+      // A little behind the eye, so the picture's edges show and it reads as an object.
+      const back = eye.clone().sub(focus).multiplyScalar(1.12);
+      this.overview.target.copy(focus);
+      this.overview.position.copy(focus).add(back);
+      const flatSide = new THREE.Vector3(back.x, 0, back.z);
+      this.framing = { side: flatSide.lengthSq() > 1e-6 ? flatSide.normalize() : side.clone(), width };
+      const turn = back.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(-22));
+      turn.applyAxisAngle(new THREE.Vector3().crossVectors(turn, new THREE.Vector3(0, 1, 0)).normalize(), THREE.MathUtils.degToRad(6));
+      this.snapPose = { position: focus.clone().add(turn.multiplyScalar(1.15)), target: focus.clone(), fov: 50 };
+      this.orbit.minDistance = Math.max(0.5, back.length() * 0.25);
+      this.orbit.maxDistance = Math.max(this.orbit.maxDistance, back.length() * 4);
     }
     if (this.mode === 'drive' && !made.runtime.drive()) this.mode = 'orbit';
     this.orbit.enabled = this.mode === 'orbit';

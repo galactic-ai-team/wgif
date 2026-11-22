@@ -101,3 +101,32 @@ aside ul { padding-left: 18px; margin: 4px 0; }
 }
 body.touch .hint { top: 62px; bottom: auto; left: 50%; transform: translateX(-50%); width: max-content; max-width: calc(100% - 24px); text-align: center; }
 @media (max-height: 480px) and (orientation: landscape) { aside { display: none; } header { padding: 4px 8px; } .btn { padding: 4px 8px; font-size: 13px; } }
+
+/* Create from image */
+#create .narrow { display: none; }
+.overlay .btn { pointer-events: auto; }
+.small { font-size: 12px; }
+#img-creator { left: max(12px, env(safe-area-inset-left)); top: 12px; width: min(340px, calc(100% - 24px)); display: flex; flex-direction: column; gap: 8px; max-height: calc(100% - 24px); overflow: auto; }
+#img-creator[hidden] { display: none; }
+#img-creator p { margin: 0; }
+.cr-head { display: flex; justify-content: space-between; align-items: center; }
+.cr-head .btn { padding: 2px 8px; }
+.cr-pick { text-align: center; }
+.cr-mode { display: flex; gap: 14px; flex-wrap: wrap; }
+.cr-row { display: flex; align-items: center; gap: 8px; }
+.cr-row input[type="range"] { flex: 1; }
+.cr-actions { display: flex; gap: 8px; }
+#cr-status { min-height: 1.2em; font-size: 13px; }
+#cr-progress { height: 4px; background: #262c55; border-radius: 2px; overflow: hidden; }
+#cr-progress > div { height: 100%; width: 0; background: #7f8cff; transition: width 0.2s; }
+#img-creator.made #cr-note, #img-creator.made .cr-pick { display: none; }
+@media (max-width: 720px) {
+  #create .wide { display: none; }
+  #create .narrow { display: inline; }
+  #img-creator { top: auto; bottom: max(10px, env(safe-area-inset-bottom)); left: 10px; width: calc(100% - 20px); max-height: 60%; padding: 10px; gap: 6px; }
+  /* Once made, only what tweaks and saves it, so the scene stays in view. */
+  #img-creator.made #cr-name, #img-creator.made .cr-row:has(#cr-cut) { display: none; }
+  #img-creator.made { flex-flow: row wrap; align-items: center; }
+  #img-creator.made .cr-head { order: 0; flex: 1 1 100%; }
+  #img-creator.made .cr-row { flex: 1 1 40%; }
+}
