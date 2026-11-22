@@ -8,6 +8,8 @@
  */
 export interface GifFrame {
   rgba: Uint8ClampedArray;
+  width: number;
+  height: number;
   /** How long it shows, ms. */
   delayMs: number;
 }
@@ -26,6 +28,8 @@ export interface GifLimits {
   maxPixels?: number;
   /** Frames read from the file at most (decoding work), before sampling. */
   maxSourceFrames?: number;
+  /** Longest side of a kept frame, px. Larger frames are nearest-neighbour downscaled before they are stored. */
+  maxSide?: number;
 }
 
 export class GifError extends Error {
@@ -203,9 +207,15 @@ function interlacedRows(h: number): number[] {
 }
 
 export function decodeGif(bytes: Uint8Array, limits: GifLimits = {}): DecodedGif {
-  const lim: Required<GifLimits> = { maxFrames: limits.maxFrames ?? 48, maxPixels: limits.maxPixels ?? 2048 * 2048, maxSourceFrames: limits.maxSourceFrames ?? 600 };
+  const lim: Required<GifLimits> = { maxFrames: limits.maxFrames ?? 48, maxPixels: limits.maxPixels ?? 2048 * 2048, maxSourceFrames: limits.maxSourceFrames ?? 600, maxSide: limits.maxSide ?? 2048 };
   const { width, height, frames } = parse(bytes, lim);
   const step = Math.max(1, Math.ceil(frames.length / lim.maxFrames));
+  // Downscale the stored frames so a big GIF's 48 kept frames do not each
+  // cost w*h*4 bytes. The working canvas stays at native size; only the
+  // output copies shrink.
+  const outScale = Math.min(1, lim.maxSide / Math.max(width, height));
+  const outW = Math.max(1, Math.round(width * outScale));
+  const outH = Math.max(1, Math.round(height * outScale));
   const canvas = new Uint8ClampedArray(width * height * 4);
   const out: GifFrame[] = [];
   let saved: Uint8ClampedArray | null = null;
@@ -237,9 +247,34 @@ export function decodeGif(bytes: Uint8Array, limits: GifLimits = {}): DecodedGif
         canvas[o + 3] = 255;
       }
     }
-    if (k % step === 0) out.push({ rgba: canvas.slice(), delayMs: f.delayMs });
-    else out[out.length - 1]!.delayMs += f.delayMs;
+    if (k % step === 0) {
+      // Downscale before storing so a big GIF's kept frames do not each cost
+      // w*h*4 bytes: with the working canvas at full size, 48 kept frames of
+      // a 2048x2048 GIF would be ~800 MB.
+      const rgba = outW === width && outH === height
+        ? canvas.slice()
+        : nnResize(canvas, width, height, outW, outH);
+      out.push({ rgba, width: outW, height: outH, delayMs: f.delayMs });
+    } else out[out.length - 1]!.delayMs += f.delayMs;
     prev = f;
   }
   return { width, height, frames: out, sourceFrames: frames.length };
+}
+
+/** Nearest-neighbour resize of an RGBA buffer. Fast; the kept frames are downscaled before they are stored. */
+function nnResize(src: Uint8ClampedArray, sw: number, sh: number, dw: number, dh: number): Uint8ClampedArray {
+  const out = new Uint8ClampedArray(dw * dh * 4);
+  for (let y = 0; y < dh; y++) {
+    const sy = Math.min(sh - 1, Math.floor((y + 0.5) * sh / dh));
+    for (let x = 0; x < dw; x++) {
+      const sx = Math.min(sw - 1, Math.floor((x + 0.5) * sw / dw));
+      const si = (sy * sw + sx) * 4;
+      const di = (y * dw + x) * 4;
+      out[di] = src[si]!;
+      out[di + 1] = src[si + 1]!;
+      out[di + 2] = src[si + 2]!;
+      out[di + 3] = src[si + 3]!;
+    }
+  }
+  return out;
 }

@@ -41,6 +41,10 @@ const canvasCodec: ImageCodec = {
 /** Longest side kept from the source (more would not survive the size budget anyway). */
 const MAX_SOURCE = 2048;
 const MAX_GIF_SIDE = 768;
+/** Coarse-pointer devices (phones/tablets) hold fewer pixels per GIF frame in memory. */
+const MAX_GIF_SIDE_COARSE = 512;
+const isCoarsePointer = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+const gifSide = isCoarsePointer ? MAX_GIF_SIDE_COARSE : MAX_GIF_SIDE;
 
 async function readPicture(file: Blob): Promise<Picture> {
   let bmp: ImageBitmap;
@@ -64,8 +68,8 @@ async function readPicture(file: Blob): Promise<Picture> {
 export async function readSource(file: File): Promise<Source> {
   const bytes = new Uint8Array(await file.arrayBuffer());
   if (isGif(bytes)) {
-    const gif = decodeGif(bytes, { maxFrames: MAX_FRAMES });
-    const frames = gif.frames.map((f) => fit({ width: gif.width, height: gif.height, rgba: f.rgba }, MAX_GIF_SIDE));
+    const gif = decodeGif(bytes, { maxFrames: MAX_FRAMES, maxSide: gifSide });
+    const frames = gif.frames.map((f) => fit({ width: f.width, height: f.height, rgba: f.rgba }, gifSide));
     return { name: file.name, frames: frames.length > 1 ? frames : [frames[0]!], delaysMs: gif.frames.map((f) => f.delayMs), sourceFrames: gif.sourceFrames };
   }
   return { name: file.name, frames: [await readPicture(file)], delaysMs: [], sourceFrames: 1 };
