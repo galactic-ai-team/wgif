@@ -362,6 +362,141 @@ describe('js mlp evaluator (Option A — the player runtime)', () => {
   });
 });
 
+/**
+ * A tiny ONNX writer: the court model rebuilt around its own six weights (copied byte for byte),
+ * with its graph or inputs/outputs changed one thing at a time.
+ */
+interface OnnxNode { op: string; inputs: string[]; outputs: string[]; ints?: Record<string, number>; floats?: Record<string, number> }
+interface OnnxValue { name: string; elem?: number; dims: number[] }
+
+const Onnx = (() => {
+  const cat = (parts: Uint8Array[]): Uint8Array => {
+    const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+    let o = 0;
+    for (const p of parts) out.set(p, (o += p.length) - p.length);
+    return out;
+  };
+  const varint = (n: number): Uint8Array => {
+    const b: number[] = [];
+    do {
+      b.push((n & 0x7f) | (n > 0x7f ? 0x80 : 0));
+      n >>>= 7;
+    } while (n > 0);
+    return Uint8Array.from(b);
+  };
+  const key = (no: number, wire: number): Uint8Array => varint((no << 3) | wire);
+  const int = (no: number, n: number): Uint8Array => cat([key(no, 0), varint(n)]);
+  const bytes = (no: number, b: Uint8Array): Uint8Array => cat([key(no, 2), varint(b.length), b]);
+  const text = (no: number, s: string): Uint8Array => bytes(no, new TextEncoder().encode(s));
+  const msg = (no: number, parts: Uint8Array[]): Uint8Array => bytes(no, cat(parts));
+  const f32 = (no: number, x: number): Uint8Array => {
+    const b = new Uint8Array(4);
+    new DataView(b.buffer).setFloat32(0, x, true);
+    return cat([key(no, 5), b]);
+  };
+
+  /** The initializers (TensorProto, field 5 of the graph) of a model, verbatim. */
+  const initializers = (model: Uint8Array): Uint8Array[] => {
+    const out: Uint8Array[] = [];
+    const fields = (s: number, e: number, visit: (no: number, vs: number, ve: number) => void): void => {
+      let p = s;
+      while (p < e) {
+        let t = 0, sh = 0, x: number;
+        do { x = model[p++]!; t |= (x & 0x7f) << sh; sh += 7; } while (x & 0x80);
+        if ((t & 7) === 0) { do { x = model[p++]!; } while (x & 0x80); continue; }
+        let len = 0;
+        sh = 0;
+        do { x = model[p++]!; len |= (x & 0x7f) << sh; sh += 7; } while (x & 0x80);
+        visit(t >> 3, p, p + len);
+        p += len;
+      }
+    };
+    fields(0, model.length, (no, vs, ve) => {
+      if (no === 7) fields(vs, ve, (gno, gs, ge) => { if (gno === 5) out.push(bytes(5, model.subarray(gs, ge))); });
+    });
+    return out;
+  };
+
+  const node = (n: OnnxNode): Uint8Array => msg(1, [
+    ...n.inputs.map((s) => text(1, s)),
+    ...n.outputs.map((s) => text(2, s)),
+    text(4, n.op),
+    ...Object.entries(n.ints ?? {}).map(([name, v]) => msg(5, [text(1, name), int(3, v), int(20, 2)])),
+    ...Object.entries(n.floats ?? {}).map(([name, v]) => msg(5, [text(1, name), f32(2, v), int(20, 1)])),
+  ]);
+  const value = (no: number, v: OnnxValue): Uint8Array =>
+    msg(no, [text(1, v.name), msg(2, [msg(1, [int(1, v.elem ?? 1), msg(2, v.dims.map((d) => msg(1, [int(1, d)])))])])]);
+
+  const COURT: OnnxNode[] = [
+    { op: 'Gemm', inputs: ['obs', 'W1', 'b1'], outputs: ['z1'] },
+    { op: 'Tanh', inputs: ['z1'], outputs: ['a1'] },
+    { op: 'Gemm', inputs: ['a1', 'W2', 'b2'], outputs: ['z2'] },
+    { op: 'Tanh', inputs: ['z2'], outputs: ['a2'] },
+    { op: 'Gemm', inputs: ['a2', 'W3', 'b3'], outputs: ['action'] },
+  ];
+
+  const model = (weights: Uint8Array[], o: { nodes?: OnnxNode[]; inputs?: OnnxValue[]; outputs?: OnnxValue[]; opset?: number } = {}): Uint8Array => {
+    const graph = msg(7, [
+      ...(o.nodes ?? COURT).map(node),
+      text(2, 'rebounder'),
+      ...weights,
+      ...(o.inputs ?? [{ name: 'obs', dims: [1, 14] }]).map((v) => value(11, v)),
+      ...(o.outputs ?? [{ name: 'action', dims: [1, 3] }]).map((v) => value(12, v)),
+    ]);
+    return cat([int(1, 7), msg(8, [int(2, o.opset ?? 13)]), graph]);
+  };
+
+  return { initializers, model, COURT };
+})();
+
+describe('js mlp graph check (SPEC §6: graph and signature agree with the descriptor before inference)', () => {
+  const weights = Onnx.initializers(onnxBytes);
+  const swap = (k: number, n: Partial<OnnxNode>): OnnxNode[] => Onnx.COURT.map((node, i) => (i === k ? { ...node, ...n } : node));
+
+  it('runs the court model, and the same model rebuilt around its weights, identically', async () => {
+    expect(weights).toHaveLength(6);
+    const original = await JsMlpNpc.load(onnxDescriptor, onnxBytes);
+    const rebuilt = await JsMlpNpc.load(onnxDescriptor, Onnx.model(weights));
+    const o = obs({ ball: { position: [3, 0.12, -2], velocity: [1, 0, 0] } });
+    expect(await rebuilt.update(o, 0.1)).toEqual(await original.update(o, 0.1));
+  });
+
+  it('refuses the same weights wired into another graph', async () => {
+    const load = (bytes: Uint8Array) => JsMlpNpc.load(onnxDescriptor, bytes);
+    await expect(load(Onnx.model(weights, { nodes: swap(1, { op: 'Relu' }) }))).rejects.toThrow(/node 2 \(Relu\) should be Tanh/);
+    await expect(load(Onnx.model(weights, { nodes: swap(0, { ints: { transB: 1 } }) }))).rejects.toThrow(/attribute transB = 1/);
+    await expect(load(Onnx.model(weights, { nodes: swap(4, { floats: { alpha: 0.5 } }) }))).rejects.toThrow(/attribute alpha = 0.5/);
+    await expect(load(Onnx.model(weights, { nodes: swap(2, { inputs: ['a1', 'W3', 'b2'] }) }))).rejects.toThrow(/node 3 \(Gemm\) takes \[a1, W3, b2\], expected \[a1, W2, b2\]/);
+    await expect(load(Onnx.model(weights, { nodes: [...Onnx.COURT.slice(0, 4), { op: 'Gemm', inputs: ['a2', 'W3', 'b3'], outputs: ['z3'] }, { op: 'Identity', inputs: ['z3'], outputs: ['action'] }] }))).rejects.toThrow(/has 6 nodes/);
+    await expect(load(Onnx.model(weights, { opset: 6 }))).rejects.toThrow(/opset 7 or later \(has 6\)/);
+  });
+
+  it('refuses graph inputs and outputs that are not the declared ones', async () => {
+    const load = (bytes: Uint8Array) => JsMlpNpc.load(onnxDescriptor, bytes);
+    await expect(load(Onnx.model(weights, { inputs: [{ name: 'obs', dims: [1, 10] }] }))).rejects.toThrow(/graph input "obs" \(type 1, \[1, 10\]\) does not match the declared "obs" float32 \[1, 14\]/);
+    await expect(load(Onnx.model(weights, { inputs: [{ name: 'obs', elem: 11, dims: [1, 14] }] }))).rejects.toThrow(/graph input "obs" \(type 11/);
+    await expect(load(Onnx.model(weights, { inputs: [{ name: 'obs', dims: [1, 14] }, { name: 'extra', dims: [1, 1] }] }))).rejects.toThrow(/has 2 inputs/);
+    const renamed = Onnx.COURT.map((n, i) => (i === 4 ? { ...n, outputs: ['act'] } : n));
+    await expect(load(Onnx.model(weights, { nodes: renamed, outputs: [{ name: 'act', dims: [1, 3] }] }))).rejects.toThrow(/graph output "act"/);
+    await expect(load(Onnx.model(weights, { outputs: [{ name: 'action', dims: [1, 4] }] }))).rejects.toThrow(/graph output "action" \(type 1, \[1, 4\]\)/);
+  });
+
+  it('a world whose onnx graph is not the evaluator\'s plays its rules twin instead', async () => {
+    const manifest = {
+      wgif: '0.1' as const, id: 'test.world.graph', title: 'Graph check', creator: { name: 'Galactic AI Team' }, created: '2026-11-22T00:00:00Z', mode: 'editable' as const,
+      entry: { scene: 'world.glb', preview: 'preview.png' }, models: [onnxDescriptor, rulesDescriptor], requires: ['scene.glb', 'runtime.rules'],
+    };
+    const files = {
+      'world.glb': utf8('glTF-fake-binary'), 'preview.png': Uint8Array.from([0x89, 0x50, 0x4e, 0x47]),
+      'models/rebounder.rules.json': rulesBytes, 'models/rebounder-mlp.onnx': Onnx.model(weights, { nodes: swap(3, { op: 'Sigmoid' }) }),
+    };
+    const loaded = await loadModelFromWorld(await unpackWgif(await packWgif(manifest, files)), 'rebounder');
+    expect(loaded.runtime).toBe('rules');
+    expect(loaded.usedFallback).toBe(true);
+    expect(loaded.warnings.join(' ')).toMatch(/node 4 \(Sigmoid\) should be Tanh/);
+  });
+});
+
 describe('loading models from a world', () => {
   function worldFiles(extra: WgifFiles = {}): { manifest: Parameters<typeof packWgif>[0]; files: WgifFiles } {
     return {
