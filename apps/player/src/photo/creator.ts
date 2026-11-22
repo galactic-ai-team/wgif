@@ -3,8 +3,9 @@
  * is first opened; the depth model behind it is fetched only when a 3D scene is first made.
  */
 import { decodeGif, isGif } from './gif.js';
-import { estimateDepth, type Backend, type DepthResult } from './depth.js';
+import { depthCached, estimateDepth, hasWebGpu, type Backend, type DepthResult } from './depth.js';
 import { buildPhotoWorld, fit, medianFrame, withPreview, MAX_FRAMES, type Encoded, type ImageCodec, type Picture, type PhotoMode, type PhotoWorld } from './world.js';
+import { isAppleMobile } from '../opening.js';
 
 export interface CreatorDeps {
   /** Opens built .wgif bytes in the player. */
@@ -75,6 +76,29 @@ const backendParam = (): Backend | 'auto' => {
   return v === 'mock' || v === 'wasm' || v === 'webgpu' ? v : 'auto';
 };
 
+export interface FlatDefaultSignals {
+  /** The depth model and runtime for the backend that would run are already cached. */
+  cached: boolean;
+  /** navigator.deviceMemory in GB (undefined where the browser does not report it). */
+  deviceMemoryGb: number | undefined;
+  /** A metered or slow connection (saveData, or effectiveType slow-2g/2g/3g). */
+  slowConnection: boolean;
+  /** An Apple mobile device (iPhone/iPad), where WebGPU is not available. */
+  appleMobileNoGpu: boolean;
+}
+
+/**
+ * Default to Flat when the model would need a fresh download on a phone-class device: a small
+ * phone (2 GB or less), a slow or metered connection, or iOS without WebGPU (wasm-only: a ~30 MB
+ * download and several-times-slower CPU inference). When the model is already cached the download
+ * is already paid for, so 3D stays the default. This only sets the initial radio — the user can
+ * still opt into 3D, which downloads the model then.
+ */
+export function shouldDefaultFlat(s: FlatDefaultSignals): boolean {
+  if (s.cached) return false;
+  return (s.deviceMemoryGb !== undefined && s.deviceMemoryGb <= 2) || s.slowConnection || s.appleMobileNoGpu;
+}
+
 export interface Creator {
   show(file?: File): void;
   hide(): void;
@@ -100,6 +124,7 @@ export function createCreator(deps: CreatorDeps): Creator {
   let world: PhotoWorld | null = null;
   let busy = false;
   let rebuildTimer: ReturnType<typeof setTimeout> | null = null;
+  let modeTouched = false;
 
   const mode = (): PhotoMode => ((document.querySelector('input[name="cr-mode"]:checked') as HTMLInputElement | null)?.value === 'flat' ? 'flat' : '3d');
   const setStatus = (text: string, fraction: number | null = null): void => {
@@ -192,7 +217,32 @@ export function createCreator(deps: CreatorDeps): Creator {
     if (f) void take(f);
   });
   make.addEventListener('click', () => void build());
-  for (const r of document.querySelectorAll<HTMLInputElement>('input[name="cr-mode"]')) r.addEventListener('change', () => { sync(); if (world) void build(); });
+  for (const r of document.querySelectorAll<HTMLInputElement>('input[name="cr-mode"]')) r.addEventListener('change', () => { modeTouched = true; sync(); if (world) void build(); });
+  // Phone policy, once, at creation: if the model is not cached and this is a phone-class device,
+  // default to Flat instead of 3D. Never overrides a mode the user already picked.
+  const applyDefaultMode = async (): Promise<void> => {
+    try {
+      const prefer = backendParam();
+      const gpu = await hasWebGpu();
+      const backend = prefer === 'auto' ? (gpu ? 'webgpu' : 'wasm') : prefer;
+      const cached = await depthCached(backend);
+      const nav = navigator as Navigator & { deviceMemory?: number; connection?: { effectiveType?: string; saveData?: boolean } };
+      const conn = nav.connection;
+      const flat = shouldDefaultFlat({
+        cached,
+        deviceMemoryGb: nav.deviceMemory,
+        slowConnection: conn?.saveData === true || ['slow-2g', '2g', '3g'].includes(conn?.effectiveType ?? ''),
+        appleMobileNoGpu: isAppleMobile(navigator) && !gpu,
+      });
+      if (flat && !modeTouched) {
+        (document.querySelector('input[name="cr-mode"][value="flat"]') as HTMLInputElement).checked = true;
+        sync();
+      }
+    } catch {
+      // Any of the signals failing leaves the default as 3D; the creator still works.
+    }
+  };
+  void applyDefaultMode();
   const later = (): void => {
     if (rebuildTimer) clearTimeout(rebuildTimer);
     rebuildTimer = setTimeout(() => { if (world && mode() === '3d') void build(); }, 300);

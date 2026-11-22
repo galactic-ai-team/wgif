@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { readGlbJson, unpackWgif, validateWorld } from '@wgif/format';
 import { encodeAnimatedGif89a, encodeDeterministicPng } from '../../../examples/court/src/prng.js';
 import { decodeGif, isGif, lzwDecode } from '../src/photo/gif.js';
+import { shouldDefaultFlat } from '../src/photo/creator.js';
 import { buildPhotoMesh, normalizeDepth, sampleDepth, syntheticDepth, type DepthMap } from '../src/photo/mesh.js';
 import { writeGlb } from '../src/photo/glb.js';
 import { atlasLayout, buildPhotoWorld, BUDGET, medianFrame, resize, type ImageCodec, type Picture } from '../src/photo/world.js';
@@ -247,6 +248,7 @@ describe('the photo world export', () => {
     }
   });
 
+  // Slow under parallel load (a 2400x1600 noisy photo is resized and PNG-encoded): give it room.
   it('a big photo is shrunk to fit the budget', async () => {
     const big = resize(picture(), 2400, 1600);
     // Noise defeats PNG compression: the worst case for size.
@@ -254,7 +256,7 @@ describe('the photo world export', () => {
     const w = await buildPhotoWorld({ frames: [big], depth: stepDepth(), mode: '3d' }, pngCodec);
     expect(w.bytes.length).toBeLessThanOrEqual(BUDGET.total);
     expect(w.sizes['world.glb']!).toBeLessThanOrEqual(BUDGET.glb);
-  });
+  }, 20000);
 
   it('the still background of a GIF drops what moves', () => {
     const frames = [0, 1, 2, 3, 4].map((k) => {
@@ -295,5 +297,25 @@ describe('the committed example picture worlds', () => {
     const mesh = w.scene.getObjectByName('photo') as unknown as { geometry: { attributes: { position: { array: Float32Array } } } };
     const z = Array.from(mesh.geometry.attributes.position.array).filter((_, i) => i % 3 === 2);
     expect(Math.max(...z) - Math.min(...z)).toBeGreaterThan(1);
+  });
+});
+
+describe('phone policy: the creator defaults to Flat on a phone-class device', () => {
+  const base = { cached: false, deviceMemoryGb: undefined, slowConnection: false, appleMobileNoGpu: false };
+  it('stays 3D when the model is already cached, whatever the device', () => {
+    expect(shouldDefaultFlat({ ...base, cached: true, deviceMemoryGb: 2, slowConnection: true, appleMobileNoGpu: true })).toBe(false);
+  });
+  it('stays 3D on a capable device with a fast connection', () => {
+    expect(shouldDefaultFlat({ ...base, deviceMemoryGb: 4 })).toBe(false);
+    expect(shouldDefaultFlat(base)).toBe(false);
+  });
+  it('defaults to Flat on a 2 GB phone, a slow connection, or iOS without WebGPU', () => {
+    expect(shouldDefaultFlat({ ...base, deviceMemoryGb: 2 })).toBe(true);
+    expect(shouldDefaultFlat({ ...base, deviceMemoryGb: 1 })).toBe(true);
+    expect(shouldDefaultFlat({ ...base, slowConnection: true })).toBe(true);
+    expect(shouldDefaultFlat({ ...base, appleMobileNoGpu: true })).toBe(true);
+  });
+  it('does not treat an unknown deviceMemory as a small phone', () => {
+    expect(shouldDefaultFlat({ ...base, deviceMemoryGb: undefined })).toBe(false);
   });
 });

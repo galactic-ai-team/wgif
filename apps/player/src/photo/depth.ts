@@ -63,6 +63,26 @@ const RUNTIME: Record<'wasm' | 'webgpu', { main: Pinned; glue: Pinned; wasm: Pin
 const modelUrl = (file: string): string => `https://huggingface.co/${MODEL.repo}/resolve/${MODEL.revision}/${file}`;
 const CACHE = 'wgif-depth-v1';
 
+/** The files this build of the creator can use — anything else in the depth cache is an orphaned old revision. */
+const CURRENT_DEPTH_URLS = new Set<string>([
+  modelUrl(MODEL.file),
+  modelUrl(WEBGPU_MODEL.file),
+  ...(['wasm', 'webgpu'] as const).flatMap((b) =>
+    [RUNTIME[b].main, RUNTIME[b].glue, RUNTIME[b].wasm].map((p) => ORT_BASE + p.file),
+  ),
+]);
+
+/** Deletes orphaned old revisions from the depth cache (a model or runtime bump leaves the old files behind). */
+async function pruneDepthCache(cache: Cache): Promise<void> {
+  try {
+    for (const req of await cache.keys()) {
+      if (!CURRENT_DEPTH_URLS.has(req.url)) await cache.delete(req);
+    }
+  } catch {
+    // Pruning is best-effort; the cache still works without it.
+  }
+}
+
 export type Backend = 'webgpu' | 'wasm' | 'mock';
 
 export interface Progress {
@@ -128,23 +148,27 @@ async function fetchPinned(url: string, pin: { sha256: string; bytes: number }, 
   } catch {
     // Out of storage: it still works this time.
   }
+  // A new revision was stored: drop any orphaned old ones now, while the cache is open.
+  if (cache) await pruneDepthCache(cache);
   return out;
 }
 
-/** True when the model and a runtime are already stored (no download needed). */
-export async function depthCached(): Promise<boolean> {
+/**
+ * True when the model and runtime for the backend that would run are already stored (no download
+ * needed). Per provider on purpose: the WebGPU file is q4f16 and the wasm file is int8, so a
+ * cached q4f16 does not mean the wasm path is ready, and vice versa. 'auto' checks the backend
+ * this browser would pick; 'mock' needs no download.
+ */
+export async function depthCached(backend: Backend | 'auto'): Promise<boolean> {
+  if (backend === 'mock') return true;
+  const which: 'webgpu' | 'wasm' = backend === 'auto' ? (await hasWebGpu() ? 'webgpu' : 'wasm') : backend;
   const cache = await openCache();
   if (!cache) return false;
-  const has = async (url: string): Promise<boolean> => !!(await cache.match(url));
-  // Either backend ready counts: the WebGPU file is q4f16, the wasm file is int8.
-  const webgpuReady =
-    (await has(modelUrl(WEBGPU_MODEL.file))) && (await has(ORT_BASE + RUNTIME.webgpu.wasm.file));
-  const wasmReady =
-    (await has(modelUrl(MODEL.file))) && (await has(ORT_BASE + RUNTIME.wasm.wasm.file));
-  return webgpuReady || wasmReady;
+  const pin = which === 'webgpu' ? WEBGPU_MODEL : MODEL;
+  return !!(await cache.match(modelUrl(pin.file))) && !!(await cache.match(ORT_BASE + RUNTIME[which].wasm.file));
 }
 
-async function hasWebGpu(): Promise<boolean> {
+export async function hasWebGpu(): Promise<boolean> {
   const gpu = (navigator as Navigator & { gpu?: { requestAdapter(): Promise<unknown> } }).gpu;
   if (!gpu) return false;
   try {
@@ -156,9 +180,17 @@ async function hasWebGpu(): Promise<boolean> {
 
 const blobUrl = (bytes: Uint8Array, type: string): string => URL.createObjectURL(new Blob([bytes as Uint8Array<ArrayBuffer>], { type }));
 
-let loaded: { backend: 'webgpu' | 'wasm'; session: OrtSession; ort: Ort; loadMs: number } | null = null;
+let loaded: { backend: 'webgpu' | 'wasm'; session: OrtSession; ort: Ort; loadMs: number; glueUrl: string | null } | null = null;
 
-async function loadRuntime(backend: 'webgpu' | 'wasm', onProgress: (p: Progress) => void): Promise<Ort> {
+/**
+ * Loads the runtime for one backend. The glue URL is returned so the caller can revoke it once
+ * the wasm module has actually run — the worker (ort.env.wasm.proxy) imports it, and revoking
+ * before the first run would break that import. The main module's blob URL is deliberately NOT
+ * revoked: ORT's proxy worker is created from the main module's script source URL, so revoking
+ * it breaks the worker at session creation (verified: revoking it fails the wasm backend with
+ * "no available backend found").
+ */
+async function loadRuntime(backend: 'webgpu' | 'wasm', onProgress: (p: Progress) => void): Promise<{ ort: Ort; glueUrl: string }> {
   const files = RUNTIME[backend];
   const [main, glue, wasm] = await Promise.all([
     fetchPinned(ORT_BASE + files.main.file, files.main, 'the runtime', () => {}),
@@ -168,10 +200,11 @@ async function loadRuntime(backend: 'webgpu' | 'wasm', onProgress: (p: Progress)
   const ort = (await import(/* @vite-ignore */ blobUrl(main, 'text/javascript'))) as Ort;
   ort.env.wasm.numThreads = globalThis.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 1) : 1;
   ort.env.wasm.proxy = true;
-  ort.env.wasm.wasmPaths = { mjs: blobUrl(glue, 'text/javascript') };
+  const glueUrl = blobUrl(glue, 'text/javascript');
+  ort.env.wasm.wasmPaths = { mjs: glueUrl };
   ort.env.wasm.wasmBinary = wasm;
   ort.env.logLevel = 'error';
-  return ort;
+  return { ort, glueUrl };
 }
 
 /** Loads the model once per page (download on first use, then from the cache). */
@@ -181,17 +214,21 @@ export async function loadDepth(prefer: Backend | 'auto', onProgress: (p: Progre
   const order: ('webgpu' | 'wasm')[] = prefer === 'wasm' ? ['wasm'] : prefer === 'webgpu' ? ['webgpu', 'wasm'] : (await hasWebGpu()) ? ['webgpu', 'wasm'] : ['wasm'];
   let last: unknown = null;
   for (const backend of order) {
+    let glueUrl: string | null = null;
     try {
       // The model file is per backend (q4f16 for WebGPU, int8 for wasm), so it is fetched here,
       // inside the loop: a WebGPU failure that falls back to wasm fetches the int8 file then.
       const pin = backend === 'webgpu' ? WEBGPU_MODEL : MODEL;
       const model = await fetchPinned(modelUrl(pin.file), pin, `the depth model (once, ~${(pin.bytes / 1e6).toFixed(0)} MB)`, onProgress);
       onProgress({ stage: `Starting the depth model (${backend === 'webgpu' ? 'GPU' : 'CPU'})…`, fraction: null });
-      const ort = await loadRuntime(backend, onProgress);
+      const { ort, glueUrl: g } = await loadRuntime(backend, onProgress);
+      glueUrl = g;
       const session = await ort.InferenceSession.create(model, { executionProviders: [backend], graphOptimizationLevel: 'all' });
-      loaded = { backend, session, ort, loadMs: Math.round(performance.now() - t0) };
+      loaded = { backend, session, ort, loadMs: Math.round(performance.now() - t0), glueUrl };
       return { backend, loadMs: loaded.loadMs };
     } catch (e) {
+      // This backend is abandoned: its glue URL will never be imported, so revoke it now.
+      if (glueUrl) URL.revokeObjectURL(glueUrl);
       last = e;
     }
   }
@@ -247,6 +284,14 @@ export async function estimateDepth(p: Picture, prefer: Backend | 'auto', onProg
   const t0 = performance.now();
   const input = new ort.Tensor('float32', toTensor(p, w, h), [1, 3, h, w]);
   const out = await session.run({ [session.inputNames[0]!]: input });
+  // The run succeeded, so the wasm module (and its worker) has imported the glue: the blob URL
+  // is no longer needed. Revoke it once; if the model is never run, the URL simply lives for the
+  // page, which costs one small mapping.
+  const glueUrl = loaded!.glueUrl;
+  if (glueUrl) {
+    URL.revokeObjectURL(glueUrl);
+    if (loaded!.glueUrl === glueUrl) loaded!.glueUrl = null;
+  }
   const t = out[session.outputNames[0]!]!;
   const dims = t.dims, oh = dims[dims.length - 2]!, ow = dims[dims.length - 1]!;
   const ms = Math.round(performance.now() - t0);

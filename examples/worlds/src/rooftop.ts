@@ -1,6 +1,11 @@
-import { packWgif, type ManifestInput } from '@wgif/format';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { packWgif, type ManifestInput, type ModelEntry } from '@wgif/format';
 import { asset, json, preview, type Credit } from './common.js';
 import { GlbBuilder, box, cylinder, empty, merge, ring, sphere, torus } from './mesh.js';
+
+const modelsDir = resolve(dirname(fileURLToPath(import.meta.url)), '../models');
 
 /**
  * "Rooftop Night Court": a half court on a parking-garage roof at dusk. The sky and skyline are a
@@ -134,6 +139,37 @@ export function rooftopState() {
 }
 
 export function rooftopManifest(): ManifestInput {
+  // Embedded AI (Nova lane): the rooftop ships the same rebounder NPC as the court, as a
+  // rules-only model — same state machine, only the bounds and home change (the deck is 22x18 m,
+  // the parapet sits at its edge, so the bounds are the deck itself). The rules model is the
+  // live behaviour and the source of truth. No ONNX clone is packaged: its agreement was only
+  // measured on the court, not on rooftop geometry.
+  const models: ModelEntry[] = [
+    {
+      id: 'rebounder-rules',
+      path: 'models/rebounder.rules.json',
+      runtime: 'rules',
+      purpose: 'rebounder',
+      version: '0.1.0',
+      inputs: [
+        { name: 'ball_position', description: 'Ball position [x, y, z] in meters.' },
+        { name: 'ball_velocity', description: 'Ball velocity [x, y, z] in m/s.' },
+        { name: 'ball_held_by', description: '"player", "rebounder", or null.' },
+        { name: 'player_position', description: 'Player position [x, y, z] in meters.' },
+        { name: 'self_position', description: 'Rebounder position [x, y, z] in meters.' },
+      ],
+      outputs: [
+        { name: 'velocity', description: 'Move velocity [x, y, z] in m/s (y is always 0).' },
+        { name: 'pass_ball', description: 'True on the tick the ball is passed back to the player.' },
+        { name: 'holding_ball', description: 'True while the rebounder carries the ball.' },
+      ],
+      tickHz: 10,
+      deterministic: true,
+      seed: 7,
+      license: 'CC-BY-4.0',
+      sizeBytesMax: 65536,
+    },
+  ];
   return {
     $schema: 'https://github.com/galactic-ai-team/wgif/blob/main/packages/format/schema/manifest.v0.1.schema.json',
     wgif: '0.1',
@@ -147,7 +183,8 @@ export function rooftopManifest(): ManifestInput {
     units: 'meters',
     entry: { scene: 'world.glb', preview: 'preview.png', interactions: 'interactions.json', state: 'game-state.json' },
     spawn: { position: [3.6, 1.7, 0], lookAt: [ROOF.rim[0], 2.6, 0] },
-    requires: ['scene.glb', 'interaction.camera', 'interaction.grab', 'interaction.trigger', 'minigame.basketball-shooting', 'state.initial'],
+    requires: ['scene.glb', 'interaction.camera', 'interaction.grab', 'interaction.trigger', 'minigame.basketball-shooting', 'state.initial', 'runtime.rules'],
+    models,
     provenance: { generator: 'wgif example-worlds 0.1.0 (rooftop)', params: { source: 'examples/worlds/src/rooftop.ts' } },
     extensions: { 'x-credits': [SKY_CREDIT] },
   };
@@ -159,5 +196,6 @@ export async function buildRooftopWgif(): Promise<Uint8Array> {
     'preview.png': preview('rooftop', [70, 52, 110], [230, 120, 160]),
     'interactions.json': json(rooftopInteractions()),
     'game-state.json': json(rooftopState()),
+    'models/rebounder.rules.json': new Uint8Array(readFileSync(resolve(modelsDir, 'rooftop-rebounder.rules.json'))),
   });
 }
