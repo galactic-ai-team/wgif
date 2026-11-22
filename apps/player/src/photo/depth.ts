@@ -20,6 +20,23 @@ export const MODEL = {
   license: 'Apache-2.0',
 } as const;
 
+/**
+ * The WebGPU file is NOT the int8 one. `model_quantized.onnx` is a dynamic-int8 graph: 79
+ * DynamicQuantizeLinear + 48 MatMulInteger + 31 ConvInteger nodes, none of which the WebGPU
+ * execution provider implements, so every one falls back to the CPU with a GPU↔CPU copy each
+ * (another int8 graph measured 0.18x and all-NaN that way). `model_q4f16.onnx` is the same Small
+ * checkpoint with 4-bit weights: 48 MatMulNBits nodes, which the WebGPU provider does implement,
+ * and it is smaller (19.1 MB vs 27.3 MB). Same float32 input, same output. On a synthetic test
+ * picture its depth tracks the int8 reference at correlation 0.95 (mean absolute difference 0.07
+ * on normalised depth); check it on real photos before relying on it. The wasm path keeps int8:
+ * the WASM provider runs MatMulInteger/ConvInteger natively with SIMD.
+ */
+export const WEBGPU_MODEL = {
+  file: 'onnx/model_q4f16.onnx',
+  bytes: 19_126_267,
+  sha256: 'eca72971aea64216d767c70c534160de53b5435b588d362bac6dbd5a73f9bf1e',
+} as const;
+
 const ORT_VERSION = '1.31.1';
 const ORT_BASE = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/`;
 
@@ -43,7 +60,7 @@ const RUNTIME: Record<'wasm' | 'webgpu', { main: Pinned; glue: Pinned; wasm: Pin
   },
 };
 
-export const MODEL_URL = `https://huggingface.co/${MODEL.repo}/resolve/${MODEL.revision}/${MODEL.file}`;
+const modelUrl = (file: string): string => `https://huggingface.co/${MODEL.repo}/resolve/${MODEL.revision}/${file}`;
 const CACHE = 'wgif-depth-v1';
 
 export type Backend = 'webgpu' | 'wasm' | 'mock';
@@ -118,7 +135,13 @@ async function fetchPinned(url: string, pin: { sha256: string; bytes: number }, 
 export async function depthCached(): Promise<boolean> {
   const cache = await openCache();
   if (!cache) return false;
-  return !!(await cache.match(MODEL_URL)) && !!(await cache.match(ORT_BASE + RUNTIME.wasm.wasm.file));
+  const has = async (url: string): Promise<boolean> => !!(await cache.match(url));
+  // Either backend ready counts: the WebGPU file is q4f16, the wasm file is int8.
+  const webgpuReady =
+    (await has(modelUrl(WEBGPU_MODEL.file))) && (await has(ORT_BASE + RUNTIME.webgpu.wasm.file));
+  const wasmReady =
+    (await has(modelUrl(MODEL.file))) && (await has(ORT_BASE + RUNTIME.wasm.wasm.file));
+  return webgpuReady || wasmReady;
 }
 
 async function hasWebGpu(): Promise<boolean> {
@@ -156,10 +179,13 @@ export async function loadDepth(prefer: Backend | 'auto', onProgress: (p: Progre
   if (loaded && (prefer === 'auto' || prefer === loaded.backend)) return { backend: loaded.backend, loadMs: loaded.loadMs };
   const t0 = performance.now();
   const order: ('webgpu' | 'wasm')[] = prefer === 'wasm' ? ['wasm'] : prefer === 'webgpu' ? ['webgpu', 'wasm'] : (await hasWebGpu()) ? ['webgpu', 'wasm'] : ['wasm'];
-  const model = await fetchPinned(MODEL_URL, MODEL, 'the depth model (once, ~27 MB)', onProgress);
   let last: unknown = null;
   for (const backend of order) {
     try {
+      // The model file is per backend (q4f16 for WebGPU, int8 for wasm), so it is fetched here,
+      // inside the loop: a WebGPU failure that falls back to wasm fetches the int8 file then.
+      const pin = backend === 'webgpu' ? WEBGPU_MODEL : MODEL;
+      const model = await fetchPinned(modelUrl(pin.file), pin, `the depth model (once, ~${(pin.bytes / 1e6).toFixed(0)} MB)`, onProgress);
       onProgress({ stage: `Starting the depth model (${backend === 'webgpu' ? 'GPU' : 'CPU'})…`, fraction: null });
       const ort = await loadRuntime(backend, onProgress);
       const session = await ort.InferenceSession.create(model, { executionProviders: [backend], graphOptimizationLevel: 'all' });

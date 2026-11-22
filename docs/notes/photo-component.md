@@ -79,9 +79,9 @@ smaller until it is ≤ 252 KiB; the preview ≤ 255 KiB; the whole file ≤ 1 M
 
 | | |
 | --- | --- |
-| Model | `onnx-community/depth-anything-v2-small`, `onnx/model_quantized.onnx` (int8), revision `4472b7362082ad9968fee890ca0f1e5aca36b93d` |
+| Model | `onnx-community/depth-anything-v2-small`, revision `4472b7362082ad9968fee890ca0f1e5aca36b93d` — two files, one per backend: `onnx/model_quantized.onnx` (int8) for the CPU/wasm path, `onnx/model_q4f16.onnx` (4-bit weights, MatMulNBits) for the WebGPU path. The int8 file is NOT used on WebGPU: its 79 DynamicQuantizeLinear + 48 MatMulInteger + 31 ConvInteger nodes are not in the WebGPU provider's operator table, so every one falls back to the CPU with a GPU↔CPU copy each. |
 | Base | Depth Anything V2 Small (Yang et al., 2024), Apache-2.0 (the Base/Large/Giant checkpoints are CC-BY-NC; only Small is Apache) |
-| Size | 27,258,801 B, SHA-256 `fcf51f1b…85547f20d` |
+| Size | int8 27,258,801 B, SHA-256 `fcf51f1b…85547f20d`; q4f16 19,126,267 B, SHA-256 `eca72971…9bf1e` (both pinned in `src/photo/depth.ts`) |
 | Runtime | onnxruntime-web 1.31.1 from jsDelivr (MIT): `ort.wasm.min.mjs` + `ort-wasm-simd-threaded.{mjs,wasm}` (14.8 MB, 3.2 MB brotli on the wire), or the WebGPU build (`ort.webgpu.min.mjs` + asyncify, 28.7 MB) when the browser has an adapter |
 | Input | long side 392 px (CPU) / 518 px (GPU), both sides multiples of 14, ImageNet mean/std |
 | Output | relative inverse depth, normalised with the 1st/99th percentiles |
