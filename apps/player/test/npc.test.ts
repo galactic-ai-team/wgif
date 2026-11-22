@@ -182,6 +182,39 @@ describe('rebounder NPC (the court model through @wgif/ai)', () => {
     expect(calls).toBeLessThanOrEqual(11);
   });
 
+  it('never steps the model faster than its declared rate (SPEC §6), at 10 Hz and at a rate that does not divide the tick', async () => {
+    for (const tickHz of [10, 7]) {
+      const opened = await open();
+      const { runtime } = opened;
+      const loaded = await loadModelFromWorld(opened.doc.world, 'rebounder');
+      const times: number[] = [];
+      const inner = loaded.model;
+      const model: NpcModel = {
+        id: inner.id,
+        runtime: inner.runtime,
+        descriptor: inner.descriptor,
+        get state() {
+          return inner.state;
+        },
+        reset: () => inner.reset(),
+        update: (obs, dt) => {
+          times.push(runtime.time);
+          return inner.update(obs, dt);
+        },
+      };
+      const npc = new RebounderAgent(createNpcHookFromModel(model, tickHz), HOME);
+      runtime.setAgent('ball-return');
+      runtime.setAgent(npc);
+      for (let i = 0; i < 600; i++) await frame(runtime, npc); // ten simulated seconds at 60 fps
+      const gaps = times.slice(1).map((t, i) => t - times[i]!);
+      // Before the fix a step every ~1.3 s was followed by another one 1/60 s later.
+      expect(Math.min(...gaps)).toBeGreaterThanOrEqual(1 / tickHz - 1e-9);
+      expect(times.length).toBeLessThanOrEqual(Math.floor(runtime.time * tickHz) + 1);
+      // ...and it is not starved either: one step per period, rounded up to whole ticks.
+      expect(times.length).toBeGreaterThanOrEqual(Math.floor(runtime.time / (Math.ceil(120 / tickHz) / 120)) - 1);
+    }
+  });
+
   it('plays the same rebound the same way every time', async () => {
     const play = async () => {
       const { runtime, npc } = await courtWithNpc();
