@@ -132,6 +132,24 @@ export interface AudioDef {
   react: AudioReact[];
 }
 
+/**
+ * A picture rebuilt in 3D (or hung as a flat screen) by the in-player creator: an
+ * `interactions[]` entry with `"type": "photo"` (see docs/notes/photo-component.md). The mesh is
+ * ordinary glTF; this entry only adds the framing and, for a GIF, the animation.
+ */
+export interface PhotoDef {
+  id: string;
+  /** Node whose material shows the picture (its baseColor and emissive maps get the frames). */
+  node: string;
+  /** Extra nodes showing the same picture (e.g. the back plate). */
+  alsoNodes: string[];
+  /** Orbit centre, and the eye the picture was "taken" from (the start view). */
+  focus: Vec3;
+  eye: Vec3 | null;
+  /** Animation: a JPEG/PNG sprite sheet, frames left to right then top to bottom. */
+  frames: { file: string; columns: number; rows: number; count: number; delaysMs: number[] } | null;
+}
+
 export interface Interactions {
   version: string;
   camera: CameraRules;
@@ -141,6 +159,7 @@ export interface Interactions {
   minigames: MinigameDef[];
   vehicles: VehicleDef[];
   audio: AudioDef[];
+  photos: PhotoDef[];
   /**
    * Trigger features the file uses that this player cannot run (an `on.*` handler it has no
    * semantics for). They are never silently dropped: they become warnings, and a world that lists
@@ -175,7 +194,7 @@ const vec3 = (v: unknown): Vec3 | null => (isVec3(v) && v.every((n) => Math.abs(
 const list = (v: unknown): unknown[] => (Array.isArray(v) ? v.slice(0, MAX_ITEMS) : []);
 
 export function emptyInteractions(): Interactions {
-  return { version: PAYLOAD_VERSION, camera: { spawn: null, lookAt: null, firstPersonHeight: 1.7, bounds: null }, objects: [], staticColliders: null, minigames: [], vehicles: [], audio: [], unsupported: [] };
+  return { version: PAYLOAD_VERSION, camera: { spawn: null, lookAt: null, firstPersonHeight: 1.7, bounds: null }, objects: [], staticColliders: null, minigames: [], vehicles: [], audio: [], photos: [], unsupported: [] };
 }
 
 /** Clamps minigame rules to playable ranges. Used for files and for the edit panel alike. */
@@ -320,6 +339,25 @@ function parseAudio(raw: Json, warn: (m: string) => void): AudioDef | null {
   };
 }
 
+function parsePhoto(raw: Json, warn: (m: string) => void): PhotoDef | null {
+  const pid = id(raw.id), node = str(raw.node), focus = vec3(raw.focus);
+  if (!pid || !node || !focus) {
+    warn('a photo needs an id, a node and a focus point, ignored');
+    return null;
+  }
+  let frames: PhotoDef['frames'] = null;
+  if (isJson(raw.frames)) {
+    const f = raw.frames;
+    const file = typeof f.file === 'string' && PAYLOAD_PATH.test(f.file) && !f.file.includes('..') ? f.file : null;
+    const columns = Math.round(num(f.columns, 0, 0, 64)), rows = Math.round(num(f.rows, 0, 0, 64));
+    const count = Math.min(Math.round(num(f.count, 0, 0, 4096)), columns * rows);
+    const delays = list(f.delaysMs).slice(0, count).map((d) => num(d, 100, 20, 60_000));
+    if (file && count >= 2) frames = { file, columns, rows, count, delaysMs: Array.from({ length: count }, (_, i) => delays[i] ?? 100) };
+    else warn(`photo "${pid}" has a frames entry without a file and at least 2 frames, shown still`);
+  }
+  return { id: pid, node, alsoNodes: list(raw.alsoNodes).map(str).filter((s): s is string => s !== null).slice(0, 16), focus, eye: vec3(raw.eye), frames };
+}
+
 /** Reads interactions.json. Pass the parsed JSON (or null/undefined when the world has none). */
 export function parseInteractions(raw: unknown): { interactions: Interactions; warnings: string[] } {
   const out = emptyInteractions();
@@ -371,6 +409,10 @@ export function parseInteractions(raw: unknown): { interactions: Interactions; w
       const a = parseAudio(item, warn);
       if (a && (seen.has(a.id) || out.vehicles.some((o) => o.id === a.id) || out.audio.some((o) => o.id === a.id))) warn(`duplicate id "${a.id}" for an audio track, ignored`);
       else if (a) out.audio.push(a);
+    } else if (isJson(item) && item.type === 'photo') {
+      const ph = parsePhoto(item, warn);
+      if (ph && out.photos.length > 0) warn(`only one photo per world is shown, "${ph.id}" ignored`);
+      else if (ph) out.photos.push(ph);
     } else freeForm++;
   }
   if (freeForm > 0) unsupported(`interactions[] (${freeForm} free-form entr${freeForm === 1 ? 'y' : 'ies'}) has no defined behaviour in v0.1`);
