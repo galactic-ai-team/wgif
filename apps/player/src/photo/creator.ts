@@ -89,6 +89,8 @@ export interface FlatDefaultSignals {
   slowConnection: boolean;
   /** An Apple mobile device (iPhone/iPad), where WebGPU is not available. */
   appleMobileNoGpu: boolean;
+  /** The browser says it is offline (navigator.onLine false): a download cannot happen now. */
+  offline?: boolean;
 }
 
 /**
@@ -100,7 +102,9 @@ export interface FlatDefaultSignals {
  */
 export function shouldDefaultFlat(s: FlatDefaultSignals): boolean {
   if (s.cached) return false;
-  return (s.deviceMemoryGb !== undefined && s.deviceMemoryGb <= 2) || s.slowConnection || s.appleMobileNoGpu;
+  // Offline (an installed player away from a network), 3D would only fail its download and fall
+  // back to Flat behind an error; start on Flat instead.
+  return s.offline === true || (s.deviceMemoryGb !== undefined && s.deviceMemoryGb <= 2) || s.slowConnection || s.appleMobileNoGpu;
 }
 
 export interface Creator {
@@ -237,6 +241,7 @@ export function createCreator(deps: CreatorDeps): Creator {
         deviceMemoryGb: nav.deviceMemory,
         slowConnection: conn?.saveData === true || ['slow-2g', '2g', '3g'].includes(conn?.effectiveType ?? ''),
         appleMobileNoGpu: isAppleMobile(navigator) && !gpu,
+        offline: navigator.onLine === false,
       });
       if (flat && !modeTouched) {
         (document.querySelector('input[name="cr-mode"][value="flat"]') as HTMLInputElement).checked = true;

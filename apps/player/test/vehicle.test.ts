@@ -146,7 +146,9 @@ describe('vehicle interactions', () => {
     expect(car.drive.maxSpeed).toBe(80);
     expect(car.drive.wheelBase).toBe(2.6);
     expect(warnings.some((w) => w.includes('a vehicle needs an id and a node'))).toBe(true);
-    expect(interactions.unsupported).toEqual(['interactions[] (1 free-form entry) has no defined behaviour in v0.1']);
+    // Flagged as a warning; it is not trigger behaviour, so it never refuses a trigger world.
+    expect(warnings).toContain('interactions: interactions[] (1 free-form entry) has no defined behaviour in v0.1, ignored');
+    expect(interactions.unsupported).toEqual([]);
   });
 });
 

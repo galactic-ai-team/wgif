@@ -79,6 +79,52 @@ export function readSrcParam(search: string, base: string): SrcResult {
   return { error: `The player only opens worlds from https:// links (got ${url.protocol}).` };
 }
 
+/** A hosted file that is bigger than the player fetches. `bytes` is its declared size, or what had arrived when it was cut off. */
+export class TooLargeError extends Error {
+  constructor(readonly bytes: number, readonly declared: boolean) {
+    super(`over the size limit (${declared ? 'declared' : 'at least'} ${bytes} bytes)`);
+    this.name = 'TooLargeError';
+  }
+}
+
+/**
+ * Reads a fetched body, refusing it as soon as it passes `max` bytes. Content-Length is checked
+ * first but not trusted: a host that sends none (or a wrong one) is cut off while streaming, so it
+ * cannot make the player buffer an unbounded download before the size check.
+ */
+export async function readCapped(res: Response, max: number): Promise<Uint8Array> {
+  const declared = Number(res.headers.get('content-length') ?? 0);
+  if (declared > max) {
+    await res.body?.cancel().catch(() => undefined);
+    throw new TooLargeError(declared, true);
+  }
+  if (!res.body) {
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (bytes.byteLength > max) throw new TooLargeError(bytes.byteLength, false);
+    return bytes;
+  }
+  const reader = res.body.getReader();
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => undefined);
+      throw new TooLargeError(total, false);
+    }
+    parts.push(value);
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.byteLength;
+  }
+  return out;
+}
+
 /** The last path segment of a URL, as a file name to show. */
 export function nameFromUrl(url: URL): string {
   let last = url.pathname.split('/').filter(Boolean).at(-1) ?? '';

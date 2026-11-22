@@ -6,7 +6,7 @@ import { unpackWgif } from '@wgif/format';
 import { exportWorld } from '../src/exporter.js';
 import {
   DESKTOP_ACCEPT, PREVIEW_MAX_BYTES, SHARE_CACHE, SHARE_KEY, WGIF_MEDIA_TYPE, fitWithin, imageNameFor, isAppleMobile, looksLikeWgif, nameFromUrl, notAWorld,
-  pickerAccept, pngSize, previewFits, readSrcParam,
+  pickerAccept, pngSize, previewFits, readSrcParam, readCapped, TooLargeError,
 } from '../src/opening.js';
 import { describeTrust, openWorld } from '../src/world.js';
 import { courtBytes, open } from './helpers.js';
@@ -235,5 +235,39 @@ describe('export with an image', () => {
     const jpeg = await exportWorld(doc, { ops, at: AT, preview: new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0, 0, 0]) });
     expect(jpeg.preview).toBe('too-big');
     for (const r of [none, big, jpeg]) expect((await openWorld(r.bytes)).files['preview.png']).toEqual(doc.world.files['preview.png']);
+  });
+});
+
+describe('?src= downloads are size-capped while they stream', () => {
+  const body = (chunks: number[]): ReadableStream<Uint8Array> => {
+    let i = 0;
+    return new ReadableStream({
+      pull(c) {
+        if (i < chunks.length) c.enqueue(new Uint8Array(chunks[i++]!));
+        else c.close();
+      },
+    });
+  };
+
+  it('reads a body under the cap whole', async () => {
+    const bytes = await readCapped(new Response(body([3, 4, 5])), 100);
+    expect(bytes.byteLength).toBe(12);
+  });
+
+  it('cuts off a body with no Content-Length as soon as it passes the cap, without reading the rest', async () => {
+    let pulled = 0;
+    const endless = new ReadableStream<Uint8Array>({ pull(c) { pulled++; c.enqueue(new Uint8Array(40)); } });
+    const err = await readCapped(new Response(endless), 100).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TooLargeError);
+    expect(err).toMatchObject({ bytes: 120, declared: false });
+    expect(pulled).toBeLessThan(6);
+  });
+
+  it('refuses a declared Content-Length over the cap before reading anything', async () => {
+    let pulled = 0;
+    const stream = new ReadableStream<Uint8Array>({ pull(c) { pulled++; c.enqueue(new Uint8Array(10)); } });
+    const err = await readCapped(new Response(stream, { headers: { 'content-length': '1000' } }), 100).catch((e: unknown) => e);
+    expect(err).toMatchObject({ name: 'TooLargeError', bytes: 1000, declared: true });
+    expect(pulled).toBeLessThanOrEqual(1);
   });
 });

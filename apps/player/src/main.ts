@@ -7,7 +7,7 @@ import { exportWorld, slug, type ExportResult } from './exporter.js';
 import { Hud } from './hud.js';
 import { mergeState, sanitizeRules, type GameState } from './interactions.js';
 import {
-  MAX_REMOTE_BYTES, SHARE_CACHE, SHARE_KEY, WGIF_MEDIA_TYPE, imageNameFor, isAppleMobile, isAndroid, nameFromUrl, notAWorld, pickerAccept, previewFits, readSrcParam,
+  MAX_REMOTE_BYTES, SHARE_CACHE, SHARE_KEY, TooLargeError, WGIF_MEDIA_TYPE, imageNameFor, isAppleMobile, isAndroid, nameFromUrl, notAWorld, pickerAccept, previewFits, readCapped, readSrcParam,
 } from './opening.js';
 import { WorldSaver, draftFits, openStateStore } from './save.js';
 import { BallReturnAgent } from './sim/agents.js';
@@ -71,6 +71,8 @@ let viewer: WorldViewer | null = null;
 let session: Session | null = null;
 let editing = false;
 let previewUrl: string | null = null;
+/** The preview shown for a world that could not be opened. */
+let refusedUrl: string | null = null;
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
 /** The open world's music track and visual, if it has one (loaded on demand). */
 let music: WorldMusic | null = null;
@@ -437,12 +439,18 @@ function showRefused(name: string, err: WorldOpenError): void {
     if (document.pointerLockElement) document.exitPointerLock();
     controls.setEnabled(false);
     driveControls.setEnabled(false);
+    // With the controls off a running Shootout could only lose time behind the overlay.
+    if (viewer?.runtime?.shootout?.running) {
+      viewer.runtime.stopShootout();
+      syncButtons();
+    }
   }
   $('refused-back').hidden = !underneath;
   const img = $<HTMLImageElement>('refused-preview');
-  if (previewUrl) URL.revokeObjectURL(previewUrl);
-  previewUrl = URL.createObjectURL(new Blob([err.preview.bytes as Uint8Array<ArrayBuffer>], { type: err.preview.mediaType }));
-  img.src = previewUrl;
+  // Its own URL: the open world's preview in the sidebar keeps the one it is using.
+  if (refusedUrl) URL.revokeObjectURL(refusedUrl);
+  refusedUrl = URL.createObjectURL(new Blob([err.preview.bytes as Uint8Array<ArrayBuffer>], { type: err.preview.mediaType }));
+  img.src = refusedUrl;
   img.hidden = false;
   $('refused-title').textContent = `${name} needs a newer player`;
   $('refused-detail').textContent = `${err.message}: ${err.details.map((d) => d.replace(/^requires: /, '')).join(', ')}. This is its preview.`;
@@ -774,10 +782,13 @@ async function openRemote(url: URL): Promise<void> {
   try {
     const res = await fetch(url, { credentials: 'omit' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const length = Number(res.headers.get('content-length') ?? 0);
-    if (length > MAX_REMOTE_BYTES) throw new Error(`it is ${formatBytes(length)}, more than the ${formatBytes(MAX_REMOTE_BYTES)} this player fetches`);
-    const bytes = new Uint8Array(await res.arrayBuffer());
-    if (bytes.byteLength > MAX_REMOTE_BYTES) throw new Error(`it is more than the ${formatBytes(MAX_REMOTE_BYTES)} this player fetches`);
+    let bytes: Uint8Array;
+    try {
+      bytes = await readCapped(res, MAX_REMOTE_BYTES);
+    } catch (e) {
+      if (!(e instanceof TooLargeError)) throw e;
+      throw new Error(`it is ${e.declared ? `${formatBytes(e.bytes)}, ` : ''}more than the ${formatBytes(MAX_REMOTE_BYTES)} this player fetches`, { cause: e });
+    }
     await openBytes(bytes, name);
   } catch (e) {
     showError(`Could not fetch ${name}: ${(e as Error).message}. The host must allow downloads from other sites (CORS).`);
