@@ -1,10 +1,13 @@
 /**
  * A small, dependency-free GIF decoder (GIF87a / GIF89a): global and local palettes, transparency,
- * interlacing and the three disposal methods. Frames come out fully composited (RGBA, the size of
- * the GIF's logical screen), the way a browser would show them. Runs in the page or in Node.
+ * interlacing and the three disposal methods. Frames come out fully composited (RGBA), the way a
+ * browser would show them. At native size they are the GIF's logical screen; when `maxSide`
+ * downscales them, each frame carries its own (smaller) width and height, and
+ * `DecodedGif.width`/`height` stay the logical screen size.
  *
  * Long GIFs are sampled: at most `maxFrames` frames are kept, evenly spread, and each kept frame
  * shows for the frames it stands for (their delays are added up), so the loop keeps its timing.
+ * Downscaling never changes a frame's delay.
  */
 export interface GifFrame {
   rgba: Uint8ClampedArray;
@@ -15,6 +18,7 @@ export interface GifFrame {
 }
 
 export interface DecodedGif {
+  /** The GIF's logical screen size. Kept frames may be smaller (see `GifFrame`); this is not their size. */
   width: number;
   height: number;
   frames: GifFrame[];

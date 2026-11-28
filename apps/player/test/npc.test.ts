@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { packWgif, unpackWgif } from '@wgif/format';
 import { createNpcHookFromModel, loadModelFromWorld, type NpcAction, type NpcModel } from '@wgif/ai';
 import { describe, expect, it } from 'vitest';
@@ -215,6 +217,51 @@ describe('rebounder NPC (the court model through @wgif/ai)', () => {
     }
   });
 
+  it('never steps the rooftop rebounder faster than its declared rate (SPEC §6)', async () => {
+    // The rooftop rebounder is rules-only (no ONNX clone) at the same 10 Hz, and the adapter reads
+    // hook.tickHz, so the same bound holds — but the model is different, so prove it on the
+    // rooftop's model rather than assuming the court test covers it. The rooftop's own GLB cannot
+    // be parsed in Node (its sky photo needs a browser image loader), so the test runs the
+    // rooftop's rules file and descriptor on the court's scene, which parses here; the stepping
+    // rate depends on the model, not the scene.
+    const rooftopRules = new Uint8Array(readFileSync(fileURLToPath(new URL('../../../examples/worlds/models/rooftop-rebounder.rules.json', import.meta.url))));
+    const world = await unpackWgif(courtBytes());
+    world.manifest.models = [{
+      id: 'rebounder-rules', path: 'models/rebounder.rules.json', runtime: 'rules', purpose: 'rebounder',
+      version: '0.1.0', tickHz: 10, deterministic: true, seed: 7, license: 'CC-BY-4.0', sizeBytesMax: 65536,
+    }];
+    const bytes = await packWgif(world.manifest, { ...world.files, 'models/rebounder.rules.json': rooftopRules });
+    const opened = await open(bytes);
+    const { runtime } = opened;
+    const loaded = await loadModelFromWorld(opened.doc.world, 'rebounder');
+    expect(loaded.runtime).toBe('rules');
+    expect(loaded.tickHz).toBe(10);
+    const times: number[] = [];
+    const inner = loaded.model;
+    const model: NpcModel = {
+      id: inner.id,
+      runtime: inner.runtime,
+      descriptor: inner.descriptor,
+      get state() {
+        return inner.state;
+      },
+      reset: () => inner.reset(),
+      update: (obs, dt) => {
+        times.push(runtime.time);
+        return inner.update(obs, dt);
+      },
+    };
+    // The rooftop rules twin's home (far corner from the rim), not the court's.
+    const npc = new RebounderAgent(createNpcHookFromModel(model, 10), [-6, 0, 6]);
+    runtime.setAgent('ball-return');
+    runtime.setAgent(npc);
+    for (let i = 0; i < 600; i++) await frame(runtime, npc); // ten simulated seconds at 60 fps
+    const gaps = times.slice(1).map((t, i) => t - times[i]!);
+    expect(Math.min(...gaps)).toBeGreaterThanOrEqual(1 / 10 - 1e-9);
+    expect(times.length).toBeLessThanOrEqual(Math.floor(runtime.time * 10) + 1);
+    expect(times.length).toBeGreaterThanOrEqual(Math.floor(runtime.time / (Math.ceil(120 / 10) / 120)) - 1);
+  });
+
   it('plays the same rebound the same way every time', async () => {
     const play = async () => {
       const { runtime, npc } = await courtWithNpc();
@@ -274,6 +321,17 @@ describe('rebounder NPC on the ONNX model (opt-in, ?npc=onnx)', () => {
     opened.runtime.setAgent(npc);
     return { ...opened, npc };
   }
+
+  it('the court ONNX model passes the graph check, so it loads as onnx (not its rules fallback)', async () => {
+    // 8221ec0 validates the graph and I/O against the descriptor before the JS MLP runs it.
+    // The court model is the one file that must pass: if its graph were refused, the loader
+    // would fall back to rules and this would read 'rules' with usedFallback true.
+    const opened = await open();
+    const loaded = await loadModelFromWorld(opened.doc.world, 'rebounder', { preferRuntime: 'onnx' });
+    expect(loaded.runtime).toBe('onnx');
+    expect(loaded.usedFallback).toBe(false);
+    expect(loaded.model.descriptor.id).toBe('rebounder-mlp');
+  });
 
   it('fetches a missed shot and passes it back on the ONNX model', async () => {
     const { runtime, npc } = await courtWithNpcOnnx();

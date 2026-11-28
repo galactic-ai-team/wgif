@@ -4,6 +4,7 @@ export * from './features.js';
 export * from './jsmlp.js';
 export * from './loader.js';
 export * from './hook.js';
+export * from './memory.js';
 // NOTE: './onnx.js' (OnnxNpc, ONNX Runtime Web) is deliberately NOT exported
 // here. It is Node-side verification only — the player runs .onnx models
 // through the JS MLP evaluator (JsMlpNpc), and exporting the ort path would

@@ -293,3 +293,93 @@ remains fail-closed until owner ratification, capability, offline/browser,
 security, reproducibility, version/lock, and release-evidence gates are
 independently completed. Do not change package versions or publish `v0.1.0`
 merely because this specification file exists.
+
+## 10. Save state / WGIF Memory (DRAFT — not yet ratified)
+
+A `.wgif` world is immutable once signed: the file never changes. What
+evolves is the player's *copy* of it. A save is a separate, validated
+delta that a player keeps beside the world — object positions, scores,
+NPC memory and learned state, player progress — and applies at runtime
+when the world is reopened. Each person's copy evolves differently; the
+original file stays byte-identical.
+
+A save is a JSON document with `format: "wgif-save"` and a `version`
+(currently `1`). It records:
+
+- `world`: the world it belongs to — `hash` (SHA-256 of the `.wgif` file
+  bytes, lowercase hex) and `id` (the world's manifest `id`). The hash is
+  the binding; the id is a human-readable check.
+- `state`: the delta, in namespaced sections — `objects` (positions of
+  named objects, each an `id` plus a `[x, y, z]` triple), `scores` (named
+  counters), `npc` (per-purpose NPC memory, each a serialized memory
+  object), and `player` (progress counters). A section MAY be absent.
+- `updated`: an ISO-8601 timestamp of the last write (for display only;
+  it is never trusted for ordering or validation).
+
+**Binding.** A player MUST recompute the world's SHA-256 on open and
+compare it with the save's `world.hash`. If they differ, the save MUST NOT
+be applied — the world changed, and the save belongs to a different copy.
+The player MAY keep the save (keyed to its old hash) but MUST NOT apply
+it to the new world, and MUST tell the player the save does not match
+this copy. A save whose `world.id` does not match the opened world's
+manifest `id` MUST also be refused.
+
+**Caps.** A save slot MUST be at most 64 KiB (65,536 bytes) of JSON, and
+all slots for one world MUST total at most 256 KiB. An NPC memory entry
+MUST be at most 4 KiB; the reference rebounder memory (§10.1) is under
+512 bytes. A player MUST refuse a save that exceeds its cap, and MUST
+refuse a save whose `objects` section names an object the world's
+manifest does not declare.
+
+**What is and is not allowed.** A save contains **data only**. It MAY
+record positions, scores, NPC memory and progress counters. It MUST NOT
+contain code, scripts, URLs, model files, new objects, new interactions,
+or anything that changes the world's manifest, its signature, or its
+files. It MUST NOT declare or replace a `models/` entry, a scene, a
+preview, or an interaction. A save that tries to do any of that MUST be
+rejected as a whole, not partially applied. Saves never execute code;
+a player MUST NOT evaluate, import, or fetch anything a save names.
+
+**Validation.** A player MUST validate a save against its schema before
+applying it, and MUST reject a save with a `version` it does not
+understand (fail-closed: the world opens fresh, the save is kept
+untouched). A player SHOULD migrate an older version forward when a
+documented migration exists; otherwise it MUST discard it (keeping the
+file, not applying it). A malformed save — bad JSON, the wrong shape, a
+non-finite number, a negative counter — MUST be discarded and the world
+opened fresh. The player MUST NOT crash or half-apply a bad save.
+
+**Storage.** Saves live in local save slots keyed to the world hash
+(IndexedDB in the reference player). The storage layer, its quota and
+eviction behaviour, and its adversarial tests are a separate concern
+(Dee's lane); this section defines only the format, the binding, and
+the caps the storage layer enforces.
+
+**Export and import.** A save slot MAY be exported as a standalone
+`.wgif-save` file (the same JSON document) so a player can share their
+evolved copy. Import MUST validate the document exactly as a local save
+is validated, including the hash binding: an imported save that matches
+no world the player has is stored as an orphan until its world is
+opened, and is never applied to a different world.
+
+### 10.1 Reference NPC memory: the court rebounder
+
+The first memory type is the court rebounder's (`packages/ai`,
+`src/memory.ts`). It records player stats — `makes`, `misses`, a
+make rate — and two fixed 4×4 heatmaps over the court's playable
+bounds: where the player shoots from (`shotHeat`, whose hottest cell is
+their favourite spot) and where missed shots land (`missHeat`). From
+the miss heatmap it derives a learned home: the declared home blended
+toward the centroid of where misses land, the blend growing with the
+evidence (0 with no misses, 0.5 after 20) and never past halfway, so
+the NPC waits closer to where the ball actually ends up without
+abandoning its post. Cell counts decay (halved across the grid past a
+cap of 255) so old misses fade. The serialized form is compact JSON
+(`v`, `seed`, `makes`, `misses`, `miss`, `shot`), under 512 bytes, and
+`parseMemory` rejects anything malformed (bad JSON, the wrong version,
+the wrong shape, a negative or non-integer count, a heatmap of the
+wrong length) by returning null — the NPC starts fresh. The memory
+applies to the NPC whichever runtime drives it (rules or the ONNX
+clone): it biases where the NPC waits, not how the model thinks. A
+future memory type MUST follow the same rules — fixed-size, bounded,
+deterministic, validated on load, and small enough for the 4 KiB cap.
