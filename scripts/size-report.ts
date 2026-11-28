@@ -254,8 +254,10 @@ const PRECOMPRESSED =
   /\.(png|jpe?g|webp|avif|ktx2|mp3|ogg|opus|mp4|webm|woff2?|zip|gz|br)$/i;
 
 /**
- * Audio payloads get their own, larger per-entry budget. A 30-60 s music
- * track at 128 kbps is 480-960 KB, over the 256 KiB default entry budget.
+ * Audio payloads get their own, larger per-entry budget. A 30 s music track at 128 kbps is
+ * ~480 KB, over the 256 KiB default entry budget; the 512 KiB cap covers about 32 s at that
+ * bitrate. A 60 s track at 128 kbps (~960 KB) does not fit — it needs a lower bitrate or a
+ * shorter cut.
  */
 const AUDIO_ENTRY =
   /\.(mp3|ogg|opus|m4a|aac|wav|flac|webm|oga)$/i;
